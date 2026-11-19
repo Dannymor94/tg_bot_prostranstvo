@@ -6,6 +6,7 @@
  *
  * REQUIRED Script Properties (Project settings → Script properties):
  *   CALENDAR_ID        ID of dedicated calendar (NOT a personal calendar)
+ *   SPREADSHEET_ID     Target spreadsheet ID: use the TEST COPY first
  *   SHEET_LABEL        Any text for your booking, e.g. "Даниил"
  *   TELEGRAM_TOKEN     Token from @BotFather
  *   WRITE_ENABLED      "false" until dry-run approved, then "true"
@@ -14,11 +15,10 @@
  *   SYNC_DAYS          60 by default; 1..120
  *
  * Script project timezone must be Europe/Moscow.
- * Spreadsheet ID and sheet name are intentionally fixed to the inspected file.
+ * Only the sheet tab name is fixed. The spreadsheet ID is required explicitly.
  */
 
 const STUDIO = Object.freeze({
-  spreadsheetId: '1LcZDSbm-sukNvLWctRuhRwXSO7gd1Hi8LA72stYiM4k',
   sheetName: 'Бронирование',
   timezone: 'Europe/Moscow',
   firstDataRow: 6,
@@ -31,6 +31,7 @@ function config_() {
   const p = PropertiesService.getScriptProperties();
   const c = {
     calendarId: p.getProperty('CALENDAR_ID'),
+    spreadsheetId: p.getProperty('SPREADSHEET_ID'),
     label: p.getProperty('SHEET_LABEL'),
     telegramToken: p.getProperty('TELEGRAM_TOKEN'),
     ownerChatId: p.getProperty('OWNER_CHAT_ID') || '',
@@ -38,6 +39,7 @@ function config_() {
     syncDays: Number(p.getProperty('SYNC_DAYS') || 60),
   };
   if (!c.calendarId) throw Error('Set CALENDAR_ID in Script properties');
+  if (!c.spreadsheetId) throw Error('Set SPREADSHEET_ID (test copy first) in Script properties');
   if (!c.label) throw Error('Set SHEET_LABEL in Script properties');
   if (!Number.isInteger(c.syncDays) || c.syncDays < 1 || c.syncDays > 120) {
     throw Error('SYNC_DAYS must be 1..120');
@@ -54,8 +56,8 @@ function calendar_(cfg) {
   return cal;
 }
 
-function sheet_() {
-  const ss = SpreadsheetApp.openById(STUDIO.spreadsheetId);
+function sheet_(cfg) {
+  const ss = SpreadsheetApp.openById(cfg.spreadsheetId);
   if (ss.getSpreadsheetTimeZone() !== STUDIO.timezone) {
     throw Error('Spreadsheet timezone changed; expected Europe/Moscow');
   }
@@ -202,7 +204,7 @@ function syncCalendarToSheet() {
   try {
     const cfg = config_();
     const calendar = calendar_(cfg);
-    const sheet = sheet_();
+    const sheet = sheet_(cfg);
     const props = PropertiesService.getScriptProperties();
     const incomplete = Object.keys(props.getProperties()).filter(x => x.startsWith('PENDING_'));
     if (incomplete.length) {
@@ -350,7 +352,7 @@ function parseRussianSlot_(text, now) {
 function overlaps_(a, b, c, d) { return a < d && b > c; }
 
 function checkAvailability_(slot, cfg) {
-  const sheet = sheet_();
+  const sheet = sheet_(cfg);
   const rows = dateRows_(sheet, [slot.date]);
   if (!rows[slot.date]) throw Error('Date not present in booking sheet: ' + slot.date);
   const row = sheet.getRange(rows[slot.date], 2, 1, 16).getDisplayValues()[0];
