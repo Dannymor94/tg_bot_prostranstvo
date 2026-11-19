@@ -311,3 +311,29 @@ function bdOnCalendarChange(event) {
   if (event && event.calendarId && event.calendarId !== cfg.calendarId) return;
   bdReconcile_('calendar-edit');
 }
+
+/**
+ * One-time, idempotent installation for the TEST bridge.
+ * Keeps Telegram polling intact; replaces ONLY the obsolete one-way sync.
+ */
+function bdInstallTriggers() {
+  const cfg = config_();
+  if (cfg.spreadsheetId !== '1FNufCunHlY5m4HAzBnRcZKRJtM7YfKKHcDehN8SGUxo' ||
+      cfg.calendarId !== '48dcda42a1404258847154571d9d674473f8580900e3fd5e7b6ca049cbc863b8@group.calendar.google.com') {
+    throw Error('Trigger installation is TEST-only');
+  }
+  const triggers = ScriptApp.getProjectTriggers();
+  if (!triggers.some(t => t.getHandlerFunction() === 'bdOnSheetEdit')) {
+    ScriptApp.newTrigger('bdOnSheetEdit').forSpreadsheet(cfg.spreadsheetId).onEdit().create();
+  }
+  if (!triggers.some(t => t.getHandlerFunction() === 'bdOnCalendarChange')) {
+    ScriptApp.newTrigger('bdOnCalendarChange').forUserCalendar(cfg.calendarId).onEventUpdated().create();
+  }
+  if (!triggers.some(t => t.getHandlerFunction() === 'bdTimer')) {
+    ScriptApp.newTrigger('bdTimer').timeBased().everyMinutes(5).create();
+  }
+  for (const old of triggers.filter(t => t.getHandlerFunction() === 'syncCalendarToSheet')) {
+    ScriptApp.deleteTrigger(old);
+  }
+  return ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction());
+}
