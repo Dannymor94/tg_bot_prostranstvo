@@ -63,12 +63,12 @@ function sheet_(cfg) {
   }
   const s = ss.getSheetByName(STUDIO.sheetName);
   if (!s) throw Error('Sheet "Бронирование" was not found');
-  // Hour headings are on row 2 (row 1 is the visual banner).
-  const headers = s.getRange(2, 2, 1, 16).getDisplayValues()[0];
+  // Verified against the native Sheet: hour headings are on row 1.
+  const headers = s.getRange(1, 2, 1, 16).getDisplayValues()[0];
   headers.forEach((x, i) => {
     const actual = Number(String(x).trim().match(/^(\d{1,2}):00\s*-/)?.[1]);
     if (actual !== i + STUDIO.firstHour) {
-      throw Error('Unexpected hour in ' + colName_(i + 2) + '2: ' + x);
+      throw Error('Unexpected hour in ' + colName_(i + 2) + '1: ' + x);
     }
   });
   return s;
