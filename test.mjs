@@ -22,6 +22,15 @@ test('15:30–16:30 projects +30 in first hour and normal label in next', () => 
   assert.equal(result.warnings.length, 1);
 });
 
+test('15:00 starts with name alone; 15:30 starts with (+30) before name in the same hour', () => {
+  const result = exec(`projectEvents_([
+    {id:'full',start:new Date(2026,10,22,15),end:new Date(2026,10,22,16),allDay:false},
+    {id:'half',start:new Date(2026,10,23,15,30),end:new Date(2026,10,23,16),allDay:false}
+  ], 'Свободное имя', ['2026-11-22','2026-11-23'])`);
+  assert.equal(result.desired['2026-11-22:15'].value, 'Свободное имя');
+  assert.equal(result.desired['2026-11-23:15'].value, '(+30) Свободное имя');
+});
+
 test('moving an event deletes its old owned cells and creates the new one', () => {
   const row = Array(16).fill(''); row[9] = '(+30) Даниил'; row[10] = 'Даниил';
   ctx.inputRow = row;
@@ -132,6 +141,7 @@ test('full sync creates, moves and deletes owned cells without touching others',
     deleteProperty: k => storage.delete(k),
     getProperties: () => Object.fromEntries(storage),
   };
+  let rejectWrite = false;
   const getRange = (row, col, height, width) => {
     if (row === 2 && col === 2) return {
       getDisplayValues: () => [Array.from({length:16},(_,i) => `${i + 6}:00-${i + 7}:00`)],
@@ -139,11 +149,11 @@ test('full sync creates, moves and deletes owned cells without touching others',
     if (row === 6 && col === 1) return { getValues: () => [[today]] };
     if (row === 6 && col === 2 && height === 1 && width === 16) return {
       getDisplayValues: () => [cells.slice()],
-      getDataValidations: () => [Array(16).fill(null)],
+      getDataValidations: () => {throw Error('Dropdown must be ignored');},
     };
     if (row === 6 && col >= 2 && col <= 17) return {
       getDisplayValue: () => cells[col - 2],
-      setValue: value => { cells[col - 2] = value; },
+      setValue: value => { if (rejectWrite) throw Error('validation rejected'); cells[col - 2] = value; },
     };
     throw Error('Unexpected range: ' + [row,col,height,width]);
   };
@@ -161,7 +171,7 @@ test('full sync creates, moves and deletes owned cells without touching others',
   ctx.SpreadsheetApp = {openById: () => ({
     getSpreadsheetTimeZone: () => 'Europe/Moscow',
     getSheetByName: () => fakeSheet,
-  })};
+  }),flush: () => {}};
   ctx.LockService = { getScriptLock: () => ({tryLock: () => true,releaseLock: () => {}}) };
   ctx.Logger = { log: () => {} };
   events = [makeEvent(15)];
@@ -178,4 +188,13 @@ test('full sync creates, moves and deletes owned cells without touching others',
   assert.equal(cells[11], '');
   assert.equal(cells[10], 'Ольга');
   assert.equal(storage.get('OWN_' + exec('dayKey_(new Date())')), undefined);
+  rejectWrite = true;
+  events = [makeEvent(18)];
+  const rejected = ctx.syncCalendarToSheet();
+  assert.equal(cells[12], '');
+  assert.match(rejected.conflicts.join('\n'), /validation rejected/);
+  assert.equal(Object.keys(props.getProperties()).filter(x => x.startsWith('PENDING_')).length, 0);
+  rejectWrite = false;
+  ctx.syncCalendarToSheet();
+  assert.equal(cells[12], 'Даниил');
 });
