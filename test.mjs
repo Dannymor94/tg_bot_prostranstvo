@@ -133,6 +133,7 @@ test('full sync creates, moves and deletes owned cells without touching others',
   cells[10] = 'Ольга'; // another teacher's booking at 16:00
   const storage = new Map([
     ['CALENDAR_ID','studio-test'], ['SHEET_LABEL','Даниил'],
+    ['SPREADSHEET_ID','test-spreadsheet-only'],
     ['WRITE_ENABLED','true'], ['SYNC_DAYS','1'],
   ]);
   const props = {
@@ -168,10 +169,10 @@ test('full sync creates, moves and deletes owned cells without touching others',
   ctx.PropertiesService = {getScriptProperties: () => props};
   ctx.Session = { getScriptTimeZone: () => 'Europe/Moscow' };
   ctx.CalendarApp = {getCalendarById: () => ({getEvents: () => events})};
-  ctx.SpreadsheetApp = {openById: () => ({
+  ctx.SpreadsheetApp = {openById: id => {assert.equal(id, 'test-spreadsheet-only'); return ({
     getSpreadsheetTimeZone: () => 'Europe/Moscow',
     getSheetByName: () => fakeSheet,
-  }),flush: () => {}};
+  });},flush: () => {}};
   ctx.LockService = { getScriptLock: () => ({tryLock: () => true,releaseLock: () => {}}) };
   ctx.Logger = { log: () => {} };
   events = [makeEvent(15)];
