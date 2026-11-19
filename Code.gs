@@ -382,6 +382,16 @@ function checkAvailability_(slot, cfg) {
 }
 
 function answerTelegram_(text) {
+  // Telegram forwards retain their text; no LLM or external parsing API is needed.
+  // All answers are read-only and are based on the current Sheet + live Calendar.
+  if (/^\/(?:start|help)(?:@\w+)?(?:\s|$)/i.test(String(text || '')) ||
+      /^помощь\s*$/i.test(String(text || ''))) {
+    return '👋 Проверяю свободное время студии.\n' +
+      'Пришли или перешли сообщение с датой и интервалом, например:\n' +
+      '«22 ноября с 15:30 до 17:00»\n' +
+      '«Завтра с 18 до 19:30»\n' +
+      'Я только проверяю занятость; бронирование не создаю.';
+  }
   const cfg = config_();
   const slot = parseRussianSlot_(text, new Date());
   if (slot.error) return slot.error;
