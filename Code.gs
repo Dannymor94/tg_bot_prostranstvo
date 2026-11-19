@@ -6,7 +6,7 @@
  *
  * REQUIRED Script Properties (Project settings → Script properties):
  *   CALENDAR_ID        ID of dedicated calendar (NOT a personal calendar)
- *   SHEET_LABEL        Exact dropdown value for your name, e.g. "Даниил"
+ *   SHEET_LABEL        Any text for your booking, e.g. "Даниил"
  *   TELEGRAM_TOKEN     Token from @BotFather
  *   WRITE_ENABLED      "false" until dry-run approved, then "true"
  * OPTIONAL:
@@ -183,19 +183,6 @@ function planRow_(key, displayed, owned, desired) {
   return { actions, conflicts };
 }
 
-function validationAllows_(rule, proposed) {
-  if (!rule || proposed === '') return true;
-  const type = rule.getCriteriaType();
-  const args = rule.getCriteriaValues();
-  if (type === SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) {
-    return args[0].map(String).includes(proposed);
-  }
-  if (type === SpreadsheetApp.DataValidationCriteria.VALUE_IN_RANGE) {
-    return args[0].getDisplayValues().flat().map(String).includes(proposed);
-  }
-  return false; // Unknown validation: fail closed.
-}
-
 function eventItems_(calendar, from, to) {
   return calendar.getEvents(from, to).map((e, i) => ({
     id: e.getId() + '#' + i, // occurrence-distinct within this bounded query
@@ -237,15 +224,9 @@ function syncCalendarToSheet() {
       const row = rows[key];
       const range = sheet.getRange(row, 2, 1, 16);
       const display = range.getDisplayValues()[0];
-      const rules = range.getDataValidations()[0];
       const plan = planRow_(key, display, owned, desired);
       report.conflicts.push(...plan.conflicts);
       plan.actions.forEach(action => {
-        const i = action.hour - STUDIO.firstHour;
-        if (!validationAllows_(rules[i], action.to)) {
-          report.conflicts.push(key + ' ' + action.hour + ':00 (dropdown rejects "' + action.to + '")');
-          return;
-        }
         const a1 = colName_(action.hour - STUDIO.firstHour + 2) + row;
         report.changes.push({ cell: a1, from: action.from, to: action.to, kind: action.kind });
         if (!cfg.writeEnabled) return;
@@ -257,7 +238,25 @@ function syncCalendarToSheet() {
         // Pending journal survives a crash between the cell write and ledger update.
         const pendingKey = 'PENDING_' + key + '_' + action.hour;
         props.setProperty(pendingKey, JSON.stringify({ from: action.from, to: action.to }));
-        cell.setValue(action.to);
+        let writeIssued = false;
+        try {
+          // Never consult the name dropdown: the label is free text.
+          // Do not mutate the owner's validation rules or formatting.
+          cell.setValue(action.to);
+          writeIssued = true;
+          SpreadsheetApp.flush();
+          if (String(cell.getDisplayValue()) !== action.to) {
+            throw Error('Sheet did not retain the requested text');
+          }
+        } catch (e) {
+          if (!writeIssued && String(cell.getDisplayValue()) === action.from) {
+            // Rejected before changing the cell: clear pending and report safely.
+            props.deleteProperty(pendingKey);
+            report.conflicts.push(a1 + ' (Sheet rejected write: ' + e.message + ')');
+            return;
+          }
+          throw e; // Unknown partial write: keep PENDING_ for manual review.
+        }
         if (action.to === '') delete owned[String(action.hour)];
         else owned[String(action.hour)] = action.to;
         saveLedger_(props, key, owned);
