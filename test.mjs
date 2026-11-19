@@ -108,6 +108,15 @@ test('half-hour legacy cells block only the latter half of an hour', () => {
   assert.equal(exec('overlaps_(930, 945, 930, 960)'), true);
 });
 
+test('Telegram /start, /help and помощь explain required date and time', () => {
+  for (const command of ['/start', '/help', 'помощь']) {
+    ctx.command = command;
+    const response = exec('answerTelegram_(command)');
+    assert.match(response, /22 ноября с 15:30 до 17:00/);
+    assert.match(response, /бронирование не создаю/);
+  }
+});
+
 test('full sync creates, moves and deletes owned cells without touching others', () => {
   const now = exec('new Date()');
   const today = vm.runInContext('new Date(new Date().getFullYear(),new Date().getMonth(),new Date().getDate())', ctx);
