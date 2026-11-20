@@ -95,6 +95,99 @@ test('Sheet changes elsewhere preserve Calendar end at :30', () => {
   assert.equal(created,0);assert.equal(deleted,0);
 });
 
+test('isolated 15:30-16:00 keeps own name even before a different booking', () => {
+  const cells = Array(16).fill('');
+  cells[9] = '(+30) Мин';
+  cells[10] = 'Марина';
+  context.fixture = cells;
+  context.known = [{id:'a', title:'Ольга',
+    start:new Date(2026,11,10,15,30).getTime(),
+    end:new Date(2026,11,10,16).getTime()}];
+  assert.deepEqual(plain(run("bdBookings_(fixture,'2026-12-10',known)")),
+    [{title:'Ольга', start:930, end:960},
+     {title:'Марина', start:960, end:1020}]);
+});
+
+test('renaming a Sheet booking preserves original Calendar event identity', () => {
+  let title = 'Ольга', edits = 0, deleted = 0, created = 0;
+  const start = new Date(2026,11,10,15).getTime();
+  const end = new Date(2026,11,10,16).getTime();
+  const meta = {id:'stable-id', title, start, end};
+  context.currentEvents = [{
+    meta, event: {setTitle:v => {title=v; edits++},setTime:()=>{edits++},
+      deleteEvent:()=>{deleted++}},
+  }];
+  context.previous = {events:[meta]};
+  context.fakeCalendar = {createEvent:()=>{created++}};
+  const result = run(`bdCreateFromSheet_(fakeCalendar,'2026-12-10',
+    [{title:'Марина',start:900,end:960}],currentEvents,previous)`);
+  assert.equal(result.updated,1);
+  assert.equal(title,'Марина');
+  assert.equal(edits,1); assert.equal(deleted,0); assert.equal(created,0);
+});
+
+test('unknown Calendar event cannot be deleted by a Sheet edit', () => {
+  const meta = {id:'not-in-snapshot',title:'Чужая бронь',
+    start:new Date(2026,11,10,19).getTime(),
+    end:new Date(2026,11,10,20).getTime()};
+  let deleted = 0, created = 0;
+  context.currentEvents = [{meta,event:{deleteEvent:()=>{deleted++}}}];
+  context.previous = {events:[]};
+  context.fakeCalendar = {createEvent:()=>{created++}};
+  assert.throws(() => run(`bdCreateFromSheet_(fakeCalendar,'2026-12-10',
+    [{title:'Ольга',start:900,end:960}],currentEvents,previous)`), /absent from/);
+  assert.equal(deleted,0); assert.equal(created,0);
+});
+
+test('adjacent same-name events remain separate and fail safe on ambiguous Sheet edit', () => {
+  const a = new Date(2026,11,10,15).getTime();
+  const b = new Date(2026,11,10,16).getTime();
+  const c = new Date(2026,11,10,17).getTime();
+  let deleted = 0, created = 0;
+  const events = [{id:'a',title:'Ольга',start:a,end:b},
+    {id:'b',title:'Ольга',start:b,end:c}];
+  context.currentEvents = events.map(meta=>({meta,event:{deleteEvent:()=>{deleted++}}}));
+  context.previous = {events};
+  context.fakeCalendar = {createEvent:()=>{created++}};
+  assert.throws(() => run(`bdCreateFromSheet_(fakeCalendar,'2026-12-10',
+    [{title:'Ольга',start:900,end:1020}],currentEvents,previous)`), /ambiguous/);
+  assert.equal(deleted,0);assert.equal(created,0);
+});
+
+test('snapshot boundaries keep two adjacent same-name calendar events distinct', () => {
+  const cells=Array(16).fill(''); cells[9]='Ольга';cells[10]='Ольга';
+  context.fixture=cells;
+  context.known=[
+    {id:'a',title:'Ольга',start:new Date(2026,11,10,15).getTime(),
+      end:new Date(2026,11,10,16).getTime()},
+    {id:'b',title:'Ольга',start:new Date(2026,11,10,16).getTime(),
+      end:new Date(2026,11,10,17).getTime()},
+  ];
+  assert.deepEqual(plain(run("bdBookings_(fixture,'2026-12-10',known)")),[
+    {title:'Ольга',start:900,end:960},
+    {title:'Ольга',start:960,end:1020},
+  ]);
+});
+
+test('Telegram does not round an exact Calendar 15:00-15:30 booking to 16:00', () => {
+  const oldSheet = context.sheet_, oldRows = context.dateRows_;
+  const oldCal = context.calendar_, oldProps = context.PropertiesService;
+  const cells=Array(16).fill(''); cells[9]='Ольга';
+  const e={isAllDayEvent:()=>false,
+    getId:()=> 'exact-half',getTitle:()=> 'Ольга',
+    getStartTime:()=>new Date(2026,11,10,15),
+    getEndTime:()=>new Date(2026,11,10,15,30)};
+  context.sheet_=()=>({getRange:()=>({getDisplayValues:()=>[cells]})});
+  context.dateRows_=()=>({'2026-12-10':2055});
+  context.PropertiesService={getScriptProperties:()=>({
+    getProperties:()=>({}),getProperty:k=>k==='BIDIR_ACTIVE'?'true':null})};
+  context.calendar_=()=>({getEvents:()=>[e]});
+  const answer=run("checkAvailability_({date:'2026-12-10',from:930,to:960},{})");
+  assert.equal(answer.free,true);
+  context.sheet_=oldSheet; context.dateRows_=oldRows;
+  context.calendar_=oldCal; context.PropertiesService=oldProps;
+});
+
 test('test-only import guard refuses production ID', () => {
   context.config_ = () => ({ spreadsheetId: 'PRODUCTION', calendarId: 'PRODUCTION' });
   context.PropertiesService = {getScriptProperties:()=>({getProperty:()=>null})};
@@ -166,7 +259,7 @@ test('full loop: import, Sheet edit, Calendar move, delete, idempotency', () => 
   const dayKey=run('dayKey_(new Date())');
   context.changedKey=dayKey;
   const changed=run("bdReconcile_('sheet-edit',[changedKey])");
-  assert.equal(changed.created,1);assert.equal(changed.deleted,1);
+  assert.equal(changed.created,0);assert.equal(changed.deleted,0);assert.equal(changed.updated,1);
   assert.ok(events.some(e=>e.getTitle()==='Марина'));
 
   // Moving that Calendar booking changes its old and new hourly Sheet cells.
@@ -182,4 +275,32 @@ test('full loop: import, Sheet edit, Calendar move, delete, idempotency', () => 
   assert.equal(deleted.sheetCells,1); assert.equal(cells[0][11],'');
   assert.equal(run('bdTimer()').days,0);
   assert.equal(cells[1][12],'Нияти Гельм');
+});
+
+test('production write requires exact approval for target Sheet and Calendar', () => {
+  context.otherCfg={spreadsheetId:'prod-sheet',calendarId:'prod-calendar'};
+  let approval=null;
+  context.guardProps={getProperty:k=>k==='WRITE_ENABLED'?'true':
+    k==='BIDIR_PRODUCTION_APPROVED'?approval:null};
+  assert.throws(()=>run('bdWriteGuard_(otherCfg,guardProps)'), /not explicitly approved/);
+  approval='prod-sheet|prod-calendar';
+  assert.doesNotThrow(()=>run('bdWriteGuard_(otherCfg,guardProps)'));
+  context.guardProps={getProperty:k=>k==='WRITE_ENABLED'?'false':
+    k==='BIDIR_PRODUCTION_APPROVED'?approval:null};
+  assert.throws(()=>run('bdWriteGuard_(otherCfg,guardProps)'), /WRITE_ENABLED/);
+});
+
+test('technical snapshot cleanup keeps recent dates and unrelated script properties', () => {
+  const state=new Map([
+    ['BD_STATE_2026-01-01','old'],['BD_STATE_2026-11-18','recent'],
+    ['TELEGRAM_TOKEN','redacted-test-placeholder'],
+  ]);
+  context.cleanProps={getProperty:k=>state.get(k)||null,
+    getProperties:()=>Object.fromEntries(state),
+    deleteProperty:k=>state.delete(k),
+    setProperty:(k,v)=>state.set(k,String(v))};
+  run('bdCleanupState_(cleanProps,new Date(2026,10,20))');
+  assert.equal(state.has('BD_STATE_2026-01-01'),false);
+  assert.equal(state.get('BD_STATE_2026-11-18'),'recent');
+  assert.ok(state.has('TELEGRAM_TOKEN'));
 });
