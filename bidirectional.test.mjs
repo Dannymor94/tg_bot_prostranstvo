@@ -52,6 +52,16 @@ test('simultaneous edits conflict, never overwrite', () => {
   assert.equal(plan.kind, 'conflict');
 });
 
+test('an unchanged but divergent checkpoint is never accepted as healthy', () => {
+  const cells=Array(16).fill(''); cells[9]='Ольга';
+  const meta={id:'a',title:'Ольга',
+    start:new Date(2026,11,11,16).getTime(),end:new Date(2026,11,11,17).getTime()};
+  context.current=cells; context.meta=meta;
+  const plan=run("bdPlanDay_('2026-12-11',current,[meta],{cells:current,events:[meta]})");
+  assert.equal(plan.kind,'conflict');
+  assert.match(plan.problems[0],/divergent/);
+});
+
 test('two calendar bookings within one hour are rejected', () => {
   const result = run(`bdProject_([
     {id:'a',title:'А',start:new Date(2026,11,11,15).getTime(),end:new Date(2026,11,11,15,30).getTime()},
@@ -114,7 +124,9 @@ test('renaming a Sheet booking preserves original Calendar event identity', () =
   const end = new Date(2026,11,10,16).getTime();
   const meta = {id:'stable-id', title, start, end};
   context.currentEvents = [{
-    meta, event: {setTitle:v => {title=v; edits++},setTime:()=>{edits++},
+    meta, event: {getId:()=>meta.id,getTitle:()=>title,
+      getStartTime:()=>new Date(start),getEndTime:()=>new Date(end),
+      setTitle:v => {title=v; edits++},setTime:()=>{edits++},
       deleteEvent:()=>{deleted++}},
   }];
   context.previous = {events:[meta]};
@@ -137,6 +149,36 @@ test('unknown Calendar event cannot be deleted by a Sheet edit', () => {
   assert.throws(() => run(`bdCreateFromSheet_(fakeCalendar,'2026-12-10',
     [{title:'Ольга',start:900,end:960}],currentEvents,previous)`), /absent from/);
   assert.equal(deleted,0); assert.equal(created,0);
+});
+
+test('combined rename and move cannot silently repurpose Calendar guests', () => {
+  const start=new Date(2026,11,10,15).getTime(),end=new Date(2026,11,10,16).getTime();
+  const old={id:'guest-event',title:'Ольга',start,end};
+  let edits=0;
+  context.currentEvents=[{meta:old,event:{setTitle:()=>{edits++},
+    setTime:()=>{edits++},deleteEvent:()=>{edits++}}}];
+  context.previous={events:[old]};context.fakeCalendar={createEvent:()=>{edits++}};
+  assert.throws(()=>run(`bdCreateFromSheet_(fakeCalendar,'2026-12-10',
+    [{title:'Дарья',start:1140,end:1200}],currentEvents,previous)`),/ambiguous/);
+  assert.equal(edits,0);
+});
+
+test('bulk deletion and recurring-event deletion fail closed', () => {
+  const start=new Date(2026,11,10,15).getTime();
+  let deleted=0;
+  const events=[0,1,2].map(i=>({id:String(i),title:'Ольга',
+    start:start+i*3600000,end:start+(i+1)*3600000}));
+  context.currentEvents=events.map(meta=>({meta,event:{
+    deleteEvent:()=>{deleted++},isRecurringEvent:()=>false}}));
+  context.previous={events};context.fakeCalendar={createEvent:()=>{}};
+  assert.throws(()=>run(`bdCreateFromSheet_(fakeCalendar,'2026-12-10',
+    [],currentEvents,previous)`),/bulk deletion/);
+  assert.equal(deleted,0);
+  context.currentEvents=[{meta:events[0],event:{
+    deleteEvent:()=>{deleted++},isRecurringEvent:()=>true}}];
+  assert.throws(()=>run(`bdCreateFromSheet_(fakeCalendar,'2026-12-10',
+    [],currentEvents,previous)`),/recurring/);
+  assert.equal(deleted,0);
 });
 
 test('adjacent same-name events remain separate and fail safe on ambiguous Sheet edit', () => {
@@ -172,6 +214,7 @@ test('snapshot boundaries keep two adjacent same-name calendar events distinct',
 test('Telegram does not round an exact Calendar 15:00-15:30 booking to 16:00', () => {
   const oldSheet = context.sheet_, oldRows = context.dateRows_;
   const oldCal = context.calendar_, oldProps = context.PropertiesService;
+  const oldLock = context.LockService;
   const cells=Array(16).fill(''); cells[9]='Ольга';
   const e={isAllDayEvent:()=>false,
     getId:()=> 'exact-half',getTitle:()=> 'Ольга',
@@ -181,11 +224,29 @@ test('Telegram does not round an exact Calendar 15:00-15:30 booking to 16:00', (
   context.dateRows_=()=>({'2026-12-10':2055});
   context.PropertiesService={getScriptProperties:()=>({
     getProperties:()=>({}),getProperty:k=>k==='BIDIR_ACTIVE'?'true':null})};
+  context.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})};
   context.calendar_=()=>({getEvents:()=>[e]});
   const answer=run("checkAvailability_({date:'2026-12-10',from:930,to:960},{})");
   assert.equal(answer.free,true);
   context.sheet_=oldSheet; context.dateRows_=oldRows;
   context.calendar_=oldCal; context.PropertiesService=oldProps;
+  context.LockService=oldLock;
+});
+
+test('Telegram refuses to claim free while a bidirectional write is pending', () => {
+  const saved={sheet_:context.sheet_,dateRows_:context.dateRows_,
+    calendar_:context.calendar_,PropertiesService:context.PropertiesService,
+    LockService:context.LockService};
+  context.sheet_=()=>({getRange:()=>({getDisplayValues:()=>[Array(16).fill('')]})});
+  context.dateRows_=()=>({'2026-12-10':2055});
+  context.calendar_=()=>({getEvents:()=>[]});
+  context.PropertiesService={getScriptProperties:()=>({
+    getProperties:()=>({'BD_PENDING_2026-12-10':'unfinished'}),
+    getProperty:k=>k==='BIDIR_ACTIVE'?'true':null})};
+  context.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})};
+  assert.throws(()=>run("checkAvailability_({date:'2026-12-10',from:900,to:960},{})"),
+    /pending or paused/);
+  Object.assign(context,saved);
 });
 
 test('test-only import guard refuses production ID', () => {
@@ -213,6 +274,7 @@ test('full loop: import, Sheet edit, Calendar move, delete, idempotency', () => 
   };
   const sheet = {
     getLastRow: () => 7,
+    getParent:()=>auditBook,
     getRange(row,col,height=1,width=1) {
       if(row===1&&col===2) return {getDisplayValues:()=>[Array.from({length:16},(_,i)=>`${i+6}:00-${i+7}:00`)]};
       if(row===6&&col===1) return {getValues:()=>[[today],[tomorrow]]};
@@ -226,6 +288,10 @@ test('full loop: import, Sheet edit, Calendar move, delete, idempotency', () => 
       throw Error('Unexpected Sheet range '+[row,col,height,width]);
     },
   };
+  const auditRows=[];
+  const auditTab={appendRow:row=>auditRows.push(row),hideSheet:()=>{}};
+  const auditBook={getSheetByName:()=>auditRows.length?auditTab:null,
+    insertSheet:()=>auditTab};
   let nextID=0;
   const events = [];
   const calendar = {
@@ -250,6 +316,7 @@ test('full loop: import, Sheet edit, Calendar move, delete, idempotency', () => 
   context.Logger={log:()=>{}};
   const imported = run('bdImportExistingBookings()');
   assert.equal(imported.applied,true); assert.equal(imported.created,2);
+  assert.equal(auditRows.length,3); // header + two recoverable pre-write records
   assert.equal(events.length,2);
   assert.equal(storage.get('BIDIR_ACTIVE'),'true');
   assert.equal(run('bdTimer()').days,0);
