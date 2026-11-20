@@ -180,6 +180,11 @@ function tgUxResult_(slot) {
   if (!tgUxValidDate_(slot.date) || !Number.isInteger(slot.from) ||
       !Number.isInteger(slot.to) || slot.from < 360 || slot.to > 1320 ||
       slot.to <= slot.from) return tgUxExpired_();
+  if (slot.date === tgUxToday_() && slot.from < tgUxLocalNowMinutes_()) {
+    return tgUxReply_('⏳ Это время сегодня уже прошло. Выбери ближайшее доступное окно.',
+      [[tgUxButton_('🟢 Свободные окна', 'u1|windows|' + slot.date + '|60|all|0')],
+        tgUxMainButton_()]);
+  }
   const result = checkAvailability_(slot, config_());
   const range = formatStudioTime_(slot.from) + '–' + formatStudioTime_(slot.to);
   const duration = slot.to - slot.from;
