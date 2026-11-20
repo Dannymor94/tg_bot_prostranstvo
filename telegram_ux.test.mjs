@@ -189,3 +189,8 @@ test('sync errors never show a slot as free, admin status is gated', () => {
   const admin = run('tgUxCallback_("u1|status", 42)');
   assert.match(admin.text, /Незавершённых операций: 1/);
 });
+
+test('GAS preflight validates menu and date callbacks without changing the schedule', () => {
+  const { run } = setup();
+  assert.equal(run('tgUxPreflight()'), 'Telegram UX read-only preflight passed');
+});
