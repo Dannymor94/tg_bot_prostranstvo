@@ -527,8 +527,10 @@ function telegramApi_(token, method, payload) {
   return json.result;
 }
 
-function sendTelegram_(token, chatId, text) {
-  return telegramApi_(token, 'sendMessage', { chat_id: chatId, text: text.slice(0, 3900) });
+function sendTelegram_(token, chatId, text, markup) {
+  const payload = { chat_id: chatId, text: text.slice(0, 3900) };
+  if (markup) payload.reply_markup = markup;
+  return telegramApi_(token, 'sendMessage', payload);
 }
 
 /** Durable, bounded Telegram outbox. The update offset advances only AFTER
@@ -544,7 +546,21 @@ function tgDeliverOutbox_(cfg, props, onlyKey) {
     catch (error) { Logger.log(key + ': corrupt outbox entry'); props.deleteProperty(key); continue; }
     if (entry.nextAt && Date.now() < entry.nextAt) continue;
     try {
-      sendTelegram_(cfg.telegramToken, entry.chatId, entry.reply);
+      if (entry.editMessageId) {
+        try {
+          telegramApi_(cfg.telegramToken, 'editMessageText', {
+            chat_id: entry.chatId, message_id: entry.editMessageId,
+            text: entry.reply.slice(0, 3900), reply_markup: entry.markup,
+          });
+        } catch (error) {
+          // Replaying a completed edit after a crash is a successful no-op.
+          if (/message is not modified/i.test(String(error.message))) {
+            // No change is necessary.
+          } else if (/message to edit not found|message can't be edited/i.test(String(error.message))) {
+            sendTelegram_(cfg.telegramToken, entry.chatId, entry.reply, entry.markup);
+          } else throw error;
+        }
+      } else sendTelegram_(cfg.telegramToken, entry.chatId, entry.reply, entry.markup);
       props.deleteProperty(key);
     } catch (error) {
       entry.attempts = (entry.attempts || 0) + 1;
@@ -572,27 +588,45 @@ function pollTelegram() {
     tgDeliverOutbox_(cfg, props);
     const offset = Number(props.getProperty('TG_OFFSET') || 0);
     const updates = telegramApi_(cfg.telegramToken, 'getUpdates', {
-      offset, limit: 20, timeout: 0, allowed_updates: ['message'],
+      offset, limit: 20, timeout: 0, allowed_updates: ['message', 'callback_query'],
     });
     updates.forEach(update => {
       const message = update.message;
-      if (message && message.chat && (message.text || message.caption)) {
+      const callback = update.callback_query;
+      if ((message && message.chat && (message.text || message.caption)) ||
+          (callback && callback.message && callback.message.chat)) {
+        const chatId = message ? message.chat.id : callback.message.chat.id;
+        if (callback) {
+          // Acknowledge immediately; availability checks may take several seconds.
+          try { telegramApi_(cfg.telegramToken, 'answerCallbackQuery', { callback_query_id: callback.id }); }
+          catch (e) { Logger.log('Callback ack: ' + String(e.message)); }
+        }
         let reply;
+        let markup = null;
         try {
           const cache = CacheService.getScriptCache();
-          const rateKey = 'TG_RATE_' + String(message.chat.id);
+          const rateKey = 'TG_RATE_' + String(chatId);
           const requests = Number(cache.get(rateKey) || 0);
           if (requests >= 10) {
             reply = '⏳ Слишком много запросов. Подожди минуту и попробуй снова.';
           } else {
             cache.put(rateKey, String(requests + 1), 60);
-            reply = answerTelegram_(message.text || message.caption, message.chat.id);
+            const result = callback
+              ? typeof tgUxCallback_ === 'function'
+                ? tgUxCallback_(callback.data, chatId)
+                : { text: 'Меню обновляется. Попробуй позже.' }
+              : typeof tgUxMessage_ === 'function'
+                ? tgUxMessage_(message.text || message.caption, chatId)
+                : { text: answerTelegram_(message.text || message.caption, chatId) };
+            reply = result.text;
+            markup = result.reply_markup || null;
           }
         }
         catch (e) { Logger.log(String(e)); reply = '⚠️ Не удалось подтвердить свободное время. Попробуй позже.'; }
         const key = 'TG_OUTBOX_' + update.update_id;
-        props.setProperty(key, JSON.stringify({ chatId: message.chat.id,
-          reply, attempts: 0, nextAt: 0 }));
+        props.setProperty(key, JSON.stringify({ chatId, reply, markup,
+          editMessageId: callback ? callback.message.message_id : null,
+          attempts: 0, nextAt: 0 }));
         // Acknowledged updates have either a durable pending reply or no reply.
         props.setProperty('TG_OFFSET', String(update.update_id + 1));
         tgDeliverOutbox_(cfg, props, key);
