@@ -282,6 +282,15 @@ function alertOnChangedConflict_(cfg, conflicts) {
 
 function parseRussianSlot_(text, now) {
   const s = String(text || '').toLowerCase().replace(/ё/g, 'е').replace(/[–—]/g, '-');
+  const intervals = [...s.matchAll(/(?:^|\s)(?:с\s*|от\s*)?(\d{1,2})(?::\d{2})?\s*(?:до|по|-)\s*(\d{1,2})(?::\d{2})?(?=\D|$)/g)];
+  if (intervals.length > 1) {
+    return { error: 'Укажи один интервал времени или отправь отдельные запросы.' };
+  }
+  const numericDates = s.match(/(?:^|[^\d])[0-3]?\d[./][01]?\d(?:[./]\d{2,4})?/g) || [];
+  const namedDates = s.match(/\b[0-3]?\d\s+(?:январ\w*|феврал\w*|март\w*|апрел\w*|мая|май|июн\w*|июл\w*|август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*)/g) || [];
+  if (numericDates.length + namedDates.length > 1) {
+    return { error: 'Укажи одну дату в сообщении или отправь отдельные запросы.' };
+  }
   if (/\b\d{1,2}\s+и\s+\d{1,2}\s+(?:январ|феврал|март|апрел|мая|июн|июл|август|сентябр|октябр|ноябр|декабр)/.test(s)) {
     return { error: 'Укажи одну дату в сообщении (или отправь отдельные запросы).' };
   }
@@ -361,18 +370,32 @@ function checkAvailability_(slot, cfg) {
     throw Error('Sync transaction incomplete; availability cannot be confirmed');
   }
   const ledger = ledger_(properties, slot.date);
+  const start = localDateFromKey_(slot.date);
+  const end = new Date(start); end.setDate(end.getDate() + 1);
+  const calendarEvents = calendar_(cfg).getEvents(start, end);
+  const bidirectional = properties.getProperty('BIDIR_ACTIVE') === 'true' &&
+    typeof bdProject_ === 'function';
+  const exactEvents = calendarEvents.filter(e => !e.isAllDayEvent() &&
+    dayKey_(e.getStartTime()) === slot.date &&
+    dayKey_(new Date(e.getEndTime().getTime() - 1)) === slot.date);
+  const projection = bidirectional
+    ? bdProject_(exactEvents.map(bdEventMeta_), slot.date) : null;
+  if (projection && projection.conflicts.length) {
+    throw Error('Calendar contains unrepresentable or overlapping bookings');
+  }
   const busy = [];
   for (let h = STUDIO.firstHour; h < STUDIO.lastHour; h++) {
     const value = String(row[h - STUDIO.firstHour] || '');
     if (!value.trim()) continue;
-    if (ledger[String(h)] === value) continue; // use exact live Calendar intervals instead
+    // V2 rows were projected from live Calendar events: use exact Calendar
+    // end times rather than counting the rounded last Sheet hour as busy.
+    if (projection && projection.cells[h - STUDIO.firstHour] === value.trim()) continue;
+    if (!bidirectional && ledger[String(h)] === value) continue;
     const begin = h * 60 + (/^\s*\(\s*\+30\s*\)/.test(value) ? 30 : 0);
     const end = (h + 1) * 60;
     if (overlaps_(slot.from, slot.to, begin, end)) busy.push([begin, end]);
   }
-  const start = localDateFromKey_(slot.date);
-  const end = new Date(start); end.setDate(end.getDate() + 1);
-  calendar_(cfg).getEvents(start, end).forEach(e => {
+  calendarEvents.forEach(e => {
     const from = e.isAllDayEvent() ? 0 : Math.max(0,
       Math.round((e.getStartTime().getTime() - start.getTime()) / 60000));
     const to = e.isAllDayEvent() ? 1440 : Math.min(1440,
@@ -382,7 +405,30 @@ function checkAvailability_(slot, cfg) {
   return { free: busy.length === 0, busy };
 }
 
-function answerTelegram_(text) {
+function formatStudioTime_(minutes) {
+  return String(Math.floor(minutes / 60)).padStart(2, '0') + ':' +
+    String(minutes % 60).padStart(2, '0');
+}
+
+function freeWindows_(date, cfg) {
+  const opening = STUDIO.firstHour * 60;
+  const closing = STUDIO.lastHour * 60;
+  const busy = checkAvailability_({ date, from: opening, to: closing }, cfg).busy;
+  const free = [];
+  let started = null;
+  for (let minute = opening; minute <= closing; minute += 30) {
+    const occupied = minute < closing &&
+      busy.some(([a, b]) => overlaps_(minute, minute + 30, a, b));
+    if (!occupied && started === null && minute < closing) started = minute;
+    if ((occupied || minute === closing) && started !== null) {
+      free.push([started, minute]);
+      started = null;
+    }
+  }
+  return free;
+}
+
+function answerTelegram_(text, chatId) {
   // Telegram forwards retain their text; no LLM or external parsing API is needed.
   // All answers are read-only and are based on the current Sheet + live Calendar.
   if (/^\/(?:start|help)(?:@\w+)?(?:\s|$)/i.test(String(text || '')) ||
@@ -391,17 +437,44 @@ function answerTelegram_(text) {
       'Пришли или перешли сообщение с датой и интервалом, например:\n' +
       '«22 ноября с 15:30 до 17:00»\n' +
       '«Завтра с 18 до 19:30»\n' +
+      '«/free 22 ноября» — свободные окна\n' +
       'Я только проверяю занятость; бронирование не создаю.';
   }
   const cfg = config_();
+  if (/^\/status(?:\s|$)/i.test(String(text || ''))) {
+    if (!cfg.ownerChatId || String(chatId) !== String(cfg.ownerChatId)) {
+      return '🔒 Статус доступен только администратору.';
+    }
+    const props = PropertiesService.getScriptProperties();
+    const raw = props.getProperty('BD_LAST_SYNC');
+    const status = raw ? JSON.parse(raw) : null;
+    return status
+      ? 'Последняя сверка: ' + status.at + '\nРежим: ' + status.mode +
+        '\nДней обновлено: ' + status.days + '\nКонфликтов: ' + status.conflicts
+      : 'Сверка ещё не запускалась.';
+  }
+  if (/^\/free(?:\s|$)/i.test(String(text || ''))) {
+    const request = String(text).replace(/^\/free\s*/i, '').trim();
+    const day = parseRussianSlot_(request + ' с 06:00 до 22:00', new Date());
+    if (day.error) return day.error;
+    const windows = freeWindows_(day.date, cfg);
+    return windows.length
+      ? '🟢 Свободные окна ' + day.date + ':\n' +
+        windows.map(([a, b]) => formatStudioTime_(a) + '–' + formatStudioTime_(b)).join('\n')
+      : '🔴 Свободных окон ' + day.date + ' нет.';
+  }
+  const clauses = String(text || '').split(/[;\n]+/).map(x => x.trim()).filter(Boolean);
+  if (clauses.length > 1) {
+    if (clauses.length > 5) return 'Можно проверить не больше пяти интервалов за раз.';
+    return clauses.map(x => answerTelegram_(x, chatId)).join('\n\n');
+  }
   const slot = parseRussianSlot_(text, new Date());
   if (slot.error) return slot.error;
   const answer = checkAvailability_(slot, cfg);
-  const time = n => String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0');
-  const period = slot.date + ' ' + time(slot.from) + '–' + time(slot.to);
+  const period = slot.date + ' ' + formatStudioTime_(slot.from) + '–' + formatStudioTime_(slot.to);
   if (answer.free) return '✅ По известному расписанию свободно: ' + period;
   return '❌ Занято: ' + period + '\nПересечения: ' +
-    answer.busy.map(x => time(x[0]) + '–' + time(x[1])).join(', ') +
+    answer.busy.map(x => formatStudioTime_(x[0]) + '–' + formatStudioTime_(x[1])).join(', ') +
     '\n(Без раскрытия имён и деталей занятий.)';
 }
 
@@ -426,7 +499,9 @@ function sendTelegram_(token, chatId, text) {
 
 /** Minute-triggered pull: no public web app and no Google credential exposed. */
 function pollTelegram() {
-  const lock = LockService.getScriptLock();
+  // Telegram's offset is separate from Sheet/Calendar state: it must not
+  // wait for a 120-day reconciliation under the global script lock.
+  const lock = LockService.getUserLock();
   if (!lock.tryLock(1000)) return; // global lock also prevents overlapping sync
   try {
     const cfg = config_();
@@ -439,7 +514,17 @@ function pollTelegram() {
       const message = update.message;
       if (message && message.chat && (message.text || message.caption)) {
         let reply;
-        try { reply = answerTelegram_(message.text || message.caption); }
+        try {
+          const cache = CacheService.getScriptCache();
+          const rateKey = 'TG_RATE_' + String(message.chat.id);
+          const requests = Number(cache.get(rateKey) || 0);
+          if (requests >= 10) {
+            reply = '⏳ Слишком много запросов. Подожди минуту и попробуй снова.';
+          } else {
+            cache.put(rateKey, String(requests + 1), 60);
+            reply = answerTelegram_(message.text || message.caption, message.chat.id);
+          }
+        }
         catch (e) { Logger.log(String(e)); reply = '⚠️ Не удалось подтвердить свободное время. Попробуй позже.'; }
         sendTelegram_(cfg.telegramToken, message.chat.id, reply);
       }
@@ -449,6 +534,9 @@ function pollTelegram() {
 }
 
 function installTriggers() {
+  if (PropertiesService.getScriptProperties().getProperty('BIDIR_ACTIVE') === 'true') {
+    throw Error('Legacy trigger installer disabled while bidirectional sync is active');
+  }
   config_();
   const names = new Set(['syncCalendarToSheet', 'pollTelegram']);
   ScriptApp.getProjectTriggers().forEach(t => {
