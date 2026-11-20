@@ -276,12 +276,19 @@ function syncCalendarToSheet() {
 }
 
 function alertOnChangedConflict_(cfg, conflicts) {
+  if (!cfg.ownerChatId) return;
   const p = PropertiesService.getScriptProperties();
   const signature = conflicts.slice().sort().join('|');
   if (p.getProperty('LAST_CONFLICT') === signature) return;
-  sendTelegram_(cfg.telegramToken, cfg.ownerChatId,
-    '⚠️ Конфликты синхронизации:\n' + conflicts.slice(0, 15).join('\n'));
-  p.setProperty('LAST_CONFLICT', signature);
+  try {
+    sendTelegram_(cfg.telegramToken, cfg.ownerChatId,
+      '⚠️ Конфликты синхронизации:\n' + conflicts.slice(0, 15).join('\n'));
+    p.setProperty('LAST_CONFLICT', signature);
+  } catch (_error) {
+    // Owner notifications are best effort. A Telegram outage must not undo a
+    // successful booking reconciliation or invalidate its Calendar sync token.
+    Logger.log('Unable to deliver the owner conflict alert');
+  }
 }
 
 function parseRussianSlot_(text, now) {
