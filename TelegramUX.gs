@@ -220,10 +220,19 @@ function tgUxStatus_(chatId) {
   const tooOld = !status || !status.at ||
     !Number.isFinite(new Date(status.at).getTime()) ||
     Date.now() - new Date(status.at).getTime() > 30 * 60000;
+  let lastError;
+  try { lastError = JSON.parse(props.BD_LAST_ERROR || 'null'); }
+  catch (_error) { lastError = null; }
+  const errorTime = lastError && lastError.at ? new Date(lastError.at).getTime() : NaN;
+  const syncTime = status && status.at ? new Date(status.at).getTime() : NaN;
+  const unresolvedError = Number.isFinite(errorTime) &&
+    (!Number.isFinite(syncTime) || errorTime > syncTime);
   const lines = ['⚙️ Состояние расписания',
     'Синхронизация: ' + (props.BIDIR_PAUSED === 'true' ? '⏸ пауза' : props.BIDIR_ACTIVE === 'true' ? '🟢 включена' : '⚠️ неактивна'),
     'Последняя сверка: ' + stamp + ' МСК',
     'Актуальность сверки: ' + (tooOld ? '⚠️ более 30 минут / нет данных' : 'недавно'),
+    'Последняя ошибка: ' + (unresolvedError ? '⚠️ после последней сверки (' +
+      lastError.mode + ')' : 'нет новых'),
     'Конфликтов: ' + (status ? status.conflicts : 'нет данных'),
     'Незавершённых операций: ' + pending,
     'Точный Calendar API: ' + (props.BD_CAL_SYNC_TOKEN ? 'токен получен' : 'токен ещё не получен'),
