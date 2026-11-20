@@ -10,9 +10,11 @@ const BD = Object.freeze({
   prefix: 'BD_STATE_',
   marker: '[STUDIO_BIDIR_V1]',
   halfMarker: '(+30) Мин',
-  days: 120,
+  days: 60,
   activeProperty: 'BIDIR_ACTIVE',
   bootstrapProperty: 'BIDIR_BOOTSTRAPPING',
+  testSpreadsheet: '1FNufCunHlY5m4HAzBnRcZKRJtM7YfKKHcDehN8SGUxo',
+  testCalendar: '48dcda42a1404258847154571d9d674473f8580900e3fd5e7b6ca049cbc863b8@group.calendar.google.com',
 });
 
 function bdNonempty_(cells) { return cells.some(x => String(x || '').trim()); }
@@ -37,7 +39,7 @@ function bdSortMeta_(items) {
 }
 
 /** Sheet cells to canonical, contiguous bookings. +30 borrows the NEXT name. */
-function bdBookings_(cells, key) {
+function bdBookings_(cells, key, knownEvents = []) {
   const row = bdClean_(cells);
   const segments = [];
   row.forEach((value, i) => {
@@ -46,13 +48,25 @@ function bdBookings_(cells, key) {
     const half = bdIsHalf_(value);
     let name = value;
     if (half) {
-      name = row[i + 1] || '';
+      // An isolated Calendar 15:30-16:00 event may sit before a different
+      // booking at 16:00. The next cell's name does NOT belong to it then.
+      const candidates = knownEvents.filter(e =>
+        bdMinutes_(new Date(e.start)) === h * 60 + 30 &&
+        bdMinutes_(new Date(e.end)) === (h + 1) * 60);
+      if (candidates.length > 1) throw Error(key + ' ' + h + ': ambiguous half-hour identity');
+      name = candidates.length === 1 ? candidates[0].title : (row[i + 1] || '');
       if (!name || bdIsHalf_(name)) throw Error(key + ' ' + h + ': +30 without next name');
     }
     const start = h * 60 + (half ? 30 : 0);
     const end = (h + 1) * 60;
     const previous = segments[segments.length - 1];
-    if (previous && previous.end === start && previous.title === name) previous.end = end;
+    const distinctEvents = knownEvents.some(e =>
+      e.title === name && bdMinutes_(new Date(e.end)) === start) &&
+      knownEvents.some(e =>
+        e.title === name && bdMinutes_(new Date(e.start)) === start);
+    if (previous && previous.end === start && previous.title === name && !distinctEvents) {
+      previous.end = end;
+    }
     else segments.push({ title: name, start, end });
   });
   return segments;
@@ -66,6 +80,7 @@ function bdProject_(events, key) {
     const from = bdMinutes_(new Date(event.start));
     const to = bdMinutes_(new Date(event.end));
     if (!event.title || from < 360 || to > 1320 || from >= to ||
+      new Date(event.start).getSeconds() !== 0 || new Date(event.end).getSeconds() !== 0 ||
       ![0, 30].includes(from % 60) || ![0, 30].includes(to % 60)) {
       collisions.push(key + ': event has unsupported time/name');
       continue;
@@ -105,7 +120,7 @@ function bdPlanDay_(key, cells, events, prior, bootstrap = false) {
       // A preceding import run may have stopped between event creation and
       // the daily checkpoint. Resume only if every existing event is an exact
       // subset of the bookings from the Sheet.
-      const bookings = bdBookings_(sheetNow, key);
+      const bookings = bdBookings_(sheetNow, key, calNow);
       const start = localDateFromKey_(key).getTime();
       const expected = bookings.map(x => ({ title: x.title,
         start: start + x.start * 60000, end: start + x.end * 60000 }));
@@ -118,7 +133,7 @@ function bdPlanDay_(key, cells, events, prior, bootstrap = false) {
   }
   if (sheetChanged) {
     let bookings;
-    try { bookings = bdBookings_(sheetNow, key); }
+    try { bookings = bdBookings_(sheetNow, key, prior ? prior.events : []); }
     catch (error) { return { kind: 'conflict', problems: [String(error.message)] }; }
     return { kind: 'sheet', bookings };
   }
@@ -152,7 +167,11 @@ function bdCalendarDays_(calendar, today, end, keys) {
   for (const key of keys) grouped[key] = [];
   const unsupported = [];
   for (const event of calendar.getEvents(today, end)) {
-    if (event.isAllDayEvent()) { unsupported.push('All-day calendar event'); continue; }
+    if (event.isAllDayEvent()) {
+      const day = dayKey_(event.getStartTime());
+      if (known.has(day)) unsupported.push(day + ': all-day event');
+      continue;
+    }
     const m = bdEventMeta_(event);
     const key = dayKey_(new Date(m.start));
     if (!known.has(key)) continue;
@@ -164,7 +183,36 @@ function bdCalendarDays_(calendar, today, end, keys) {
   return { grouped, unsupported };
 }
 
-function bdCreateFromSheet_(calendar, key, bookings, existing) {
+function bdWriteGuard_(cfg, props) {
+  if (props.getProperty('WRITE_ENABLED') !== 'true') {
+    throw Error('WRITE_ENABLED must be true for bidirectional writes');
+  }
+  if (cfg.spreadsheetId === BD.testSpreadsheet && cfg.calendarId === BD.testCalendar) return;
+  if (props.getProperty('BIDIR_PRODUCTION_APPROVED') !==
+      cfg.spreadsheetId + '|' + cfg.calendarId) {
+    throw Error('Production IDs not explicitly approved; refusing bidirectional writes');
+  }
+}
+
+function bdPreflightError_(message) {
+  const error = Error(message);
+  error.safeNoWrite = true;
+  return error;
+}
+
+function bdCleanupState_(props, today) {
+  const current = dayKey_(today);
+  if (props.getProperty('BD_LAST_GC') === current) return;
+  const cutoff = new Date(today); cutoff.setDate(cutoff.getDate() - 7);
+  const old = dayKey_(cutoff);
+  const values = props.getProperties();
+  Object.keys(values).forEach(k => {
+    if (k.startsWith(BD.prefix) && k.slice(BD.prefix.length) < old) props.deleteProperty(k);
+  });
+  props.setProperty('BD_LAST_GC', current);
+}
+
+function bdCreateFromSheet_(calendar, key, bookings, existing, prior) {
   const unused = existing.slice();
   const pending = [];
   for (const booking of bookings) {
@@ -179,13 +227,38 @@ function bdCreateFromSheet_(calendar, key, bookings, existing) {
     if (i >= 0) unused.splice(i, 1);
     else pending.push(expected);
   }
+  // An edit to the Sheet may not remove an event that was never checkpointed.
+  // This is especially important for direct Calendar edits racing with onEdit.
+  const checkpointed = new Set((prior ? prior.events : []).map(e => e.id));
+  if (unused.some(e => !checkpointed.has(e.meta.id))) {
+    throw bdPreflightError_(key + ': refusing to delete an event absent from the previous snapshot');
+  }
+  let updated = 0;
+  // In a unique one-to-one edit keep the original Calendar event ID, guests,
+  // reminders and description. Multiple candidates are ambiguous and require
+  // explicit resolution; never coalesce adjacent same-name events.
+  if (pending.length && unused.length) {
+    if (pending.length !== 1 || unused.length !== 1) {
+      throw bdPreflightError_(key + ': ambiguous event identity; keeping calendar unchanged');
+    }
+    const target = pending.pop();
+    const old = unused.pop();
+    if (old.event.isRecurringEvent && old.event.isRecurringEvent()) {
+      throw bdPreflightError_(key + ': recurring event cannot be edited from hourly grid');
+    }
+    if (old.meta.title !== target.title) old.event.setTitle(target.title);
+    if (old.meta.start !== target.start || old.meta.end !== target.end) {
+      old.event.setTime(new Date(target.start), new Date(target.end));
+    }
+    updated++;
+  }
   // Create before deleting, so a failure doesn't erase existing reservations.
   for (const booking of pending) {
     calendar.createEvent(booking.title, new Date(booking.start), new Date(booking.end),
       { description: BD.marker + ' Imported from test booking Sheet; edits synchronize both ways.' });
   }
   for (const old of unused) old.event.deleteEvent();
-  return { created: pending.length, deleted: unused.length };
+  return { created: pending.length, deleted: unused.length, updated };
 }
 
 function bdWriteCells_(sheet, rowNumber, previous, desired) {
@@ -220,51 +293,77 @@ function bdReconcile_(mode, selectedKeys) {
     if (mode !== 'bootstrap' && props.getProperty(BD.activeProperty) !== 'true') {
       return { inactive: true };
     }
+    bdWriteGuard_(cfg, props);
     const today = localDay_(new Date());
-    const end = new Date(today); end.setDate(end.getDate() + BD.days);
-    const keys = bdDates_(today, BD.days);
-    const allowed = selectedKeys ? new Set(selectedKeys) : null;
+    const keys = selectedKeys
+      ? [...new Set(selectedKeys)].filter(k => /^\d{4}-\d\d-\d\d$/.test(k) && k >= dayKey_(today)).sort()
+      : bdDates_(today, BD.days);
+    if (!keys.length) return { mode, applied: true, days: 0, created: 0,
+      deleted: 0, updated: 0, sheetCells: 0, conflicts: [] };
+    const from = localDateFromKey_(keys[0]);
+    const end = localDateFromKey_(keys[keys.length - 1]);
+    end.setDate(end.getDate() + 1);
     const sheet = sheet_(cfg);
     const calendar = calendar_(cfg);
     const dates = bdReadDays_(sheet, keys);
-    const { grouped, unsupported } = bdCalendarDays_(calendar, today, end, keys);
-    if (unsupported.length) throw Error('Calendar has unsupported events: ' + unsupported.join('; '));
+    const { grouped, unsupported } = bdCalendarDays_(calendar, from, end, keys);
     const plans = [];
-    const conflicts = [];
+    const conflicts = unsupported.slice();
+    const blockedDays = new Set(unsupported.map(s => s.slice(0, 10)));
     for (const key of keys) {
-      if (allowed && !allowed.has(key)) continue;
+      if (blockedDays.has(key)) continue;
       const source = dates[key];
       const events = grouped[key].map(x => x.meta);
       const prior = bdState_(props, key);
+      if (props.getProperty('BD_PENDING_' + key)) {
+        conflicts.push(key + ': incomplete transaction requires recovery');
+        continue;
+      }
       if (!source) {
         if (events.length || prior) conflicts.push(key + ': date absent from Sheet');
         continue;
       }
       const plan = bdPlanDay_(key, source.cells, events, prior, mode === 'bootstrap');
       if (plan.kind === 'conflict') conflicts.push(...plan.problems);
-      else if (plan.kind !== 'none') plans.push({ key, source, events: grouped[key], plan });
+      else if (plan.kind !== 'none') plans.push({ key, source, events: grouped[key], prior, plan });
     }
-    if (conflicts.length) {
+    if (mode === 'bootstrap' && conflicts.length) {
       Logger.log(JSON.stringify({ mode, conflicts: conflicts.slice(0, 30) }));
       return { mode, applied: false, conflicts };
     }
-    let created = 0, deleted = 0, sheetCells = 0;
+    let created = 0, deleted = 0, updated = 0, sheetCells = 0, appliedDays = 0;
     for (const item of plans) {
-      const { key, source, events, plan } = item;
-      if (plan.kind === 'sheet') {
-        const done = bdCreateFromSheet_(calendar, key, plan.bookings, events);
-        created += done.created; deleted += done.deleted;
-      } else if (plan.kind === 'calendar') {
-        sheetCells += bdWriteCells_(sheet, source.row, source.cells, plan.desired);
+      const { key, source, events, prior, plan } = item;
+      try {
+        props.setProperty('BD_PENDING_' + key,
+          JSON.stringify({ mode, started: Date.now(), kind: plan.kind }));
+        if (plan.kind === 'sheet') {
+          const done = bdCreateFromSheet_(calendar, key, plan.bookings, events, prior);
+          created += done.created; deleted += done.deleted; updated += done.updated;
+        } else if (plan.kind === 'calendar') {
+          sheetCells += bdWriteCells_(sheet, source.row, source.cells, plan.desired);
+        }
+        const start = localDateFromKey_(key);
+        const dayEnd = new Date(start); dayEnd.setDate(dayEnd.getDate() + 1);
+        const currentEvents = calendar.getEvents(start, dayEnd).filter(e => !e.isAllDayEvent())
+          .filter(e => dayKey_(e.getStartTime()) === key).map(bdEventMeta_);
+        const currentSheet = sheet.getRange(source.row, 2, 1, 16).getDisplayValues()[0];
+        bdSave_(props, key, currentSheet, currentEvents);
+        props.deleteProperty('BD_PENDING_' + key);
+        appliedDays++;
+      } catch (error) {
+        if (error.safeNoWrite) props.deleteProperty('BD_PENDING_' + key);
+        conflicts.push(key + ': ' + String(error.message || error));
       }
-      const start = localDateFromKey_(key);
-      const dayEnd = new Date(start); dayEnd.setDate(dayEnd.getDate() + 1);
-      const currentEvents = calendar.getEvents(start, dayEnd).filter(e => !e.isAllDayEvent())
-        .filter(e => dayKey_(e.getStartTime()) === key).map(bdEventMeta_);
-      const currentSheet = sheet.getRange(source.row, 2, 1, 16).getDisplayValues()[0];
-      bdSave_(props, key, currentSheet, currentEvents);
     }
-    const report = { mode, applied: true, days: plans.length, created, deleted, sheetCells, conflicts: [] };
+    bdCleanupState_(props, today);
+    const report = { mode, applied: conflicts.length === 0, partial: conflicts.length > 0,
+      days: appliedDays, created, deleted, updated, sheetCells, conflicts };
+    props.setProperty('BD_LAST_SYNC', JSON.stringify({
+      at: new Date().toISOString(), mode, days: appliedDays, conflicts: conflicts.length }));
+    if (conflicts.length && cfg.ownerChatId) {
+      alertOnChangedConflict_(cfg, conflicts);
+    }
     Logger.log(JSON.stringify(report));
     return report;
   } finally { lock.releaseLock(); }
@@ -274,8 +373,8 @@ function bdReconcile_(mode, selectedKeys) {
 function bdImportExistingBookings() {
   const cfg = config_();
   const props = PropertiesService.getScriptProperties();
-  if (cfg.spreadsheetId !== '1FNufCunHlY5m4HAzBnRcZKRJtM7YfKKHcDehN8SGUxo' ||
-      cfg.calendarId !== '48dcda42a1404258847154571d9d674473f8580900e3fd5e7b6ca049cbc863b8@group.calendar.google.com') {
+  if (cfg.spreadsheetId !== BD.testSpreadsheet ||
+      cfg.calendarId !== BD.testCalendar) {
     throw Error('Import is TEST-only; refusing non-test Sheet or Calendar');
   }
   if (props.getProperty(BD.activeProperty) === 'true') throw Error('Bidirectional already active');
@@ -312,14 +411,62 @@ function bdOnCalendarChange(event) {
   bdReconcile_('calendar-edit');
 }
 
+/** Inspect a crash journal; recover only days already converged exactly. */
+function bdRecoverPending() {
+  const cfg = config_();
+  const props = PropertiesService.getScriptProperties();
+  bdWriteGuard_(cfg, props);
+  const pending = Object.keys(props.getProperties())
+    .filter(k => k.startsWith('BD_PENDING_'));
+  const recovered = [], blocked = [];
+  if (!pending.length) return { recovered, blocked };
+  const sheet = sheet_(cfg), calendar = calendar_(cfg);
+  for (const name of pending) {
+    const key = name.slice('BD_PENDING_'.length);
+    const source = bdReadDays_(sheet, [key])[key];
+    if (!source) { blocked.push(key + ': missing Sheet row'); continue; }
+    const start = localDateFromKey_(key);
+    const end = new Date(start); end.setDate(end.getDate() + 1);
+    const list = calendar.getEvents(start,end);
+    if (list.some(e => e.isAllDayEvent())) {
+      blocked.push(key + ': all-day event'); continue;
+    }
+    const events = list.filter(e => dayKey_(e.getStartTime()) === key).map(bdEventMeta_);
+    const prior = bdState_(props, key);
+    const plan = bdPlanDay_(key, source.cells, events, prior);
+    if (!['none', 'adopt'].includes(plan.kind)) {
+      blocked.push(key + ': state diverged; manual recovery required'); continue;
+    }
+    bdSave_(props, key, source.cells, events);
+    props.deleteProperty(name);
+    recovered.push(key);
+  }
+  return { recovered, blocked };
+}
+
+function bdPause() {
+  PropertiesService.getScriptProperties().setProperty('BIDIR_PAUSED','true');
+  return 'Synchronization paused; Telegram availability remains read-only';
+}
+
+function bdResume() {
+  const cfg=config_();
+  const props=PropertiesService.getScriptProperties();
+  bdWriteGuard_(cfg,props);
+  const blocked=Object.keys(props.getProperties()).filter(k=>k.startsWith('BD_PENDING_'));
+  if (blocked.length) throw Error('Recover pending days before resuming: '+blocked.join(', '));
+  props.deleteProperty('BIDIR_PAUSED');
+  return 'Synchronization resumed';
+}
+
 /**
  * One-time, idempotent installation for the TEST bridge.
  * Keeps Telegram polling intact; replaces ONLY the obsolete one-way sync.
  */
 function bdInstallTriggers() {
   const cfg = config_();
-  if (cfg.spreadsheetId !== '1FNufCunHlY5m4HAzBnRcZKRJtM7YfKKHcDehN8SGUxo' ||
-      cfg.calendarId !== '48dcda42a1404258847154571d9d674473f8580900e3fd5e7b6ca049cbc863b8@group.calendar.google.com') {
+  if (cfg.spreadsheetId !== BD.testSpreadsheet ||
+      cfg.calendarId !== BD.testCalendar) {
     throw Error('Trigger installation is TEST-only');
   }
   const triggers = ScriptApp.getProjectTriggers();
@@ -329,9 +476,11 @@ function bdInstallTriggers() {
   if (!triggers.some(t => t.getHandlerFunction() === 'bdOnCalendarChange')) {
     ScriptApp.newTrigger('bdOnCalendarChange').forUserCalendar(cfg.calendarId).onEventUpdated().create();
   }
-  if (!triggers.some(t => t.getHandlerFunction() === 'bdTimer')) {
-    ScriptApp.newTrigger('bdTimer').timeBased().everyMinutes(5).create();
-  }
+  // Reinstall the timer with an affordable cadence. Event triggers handle
+  // ordinary manual edits promptly; this is only a reconciliation fallback.
+  triggers.filter(t => t.getHandlerFunction() === 'bdTimer')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('bdTimer').timeBased().everyMinutes(15).create();
   for (const old of triggers.filter(t => t.getHandlerFunction() === 'syncCalendarToSheet')) {
     ScriptApp.deleteTrigger(old);
   }
