@@ -105,11 +105,27 @@ test('dates and time phrases are parsed without LLM', () => {
 
 test('ambiguous requests are rejected', () => {
   for (const phrase of ['22 и 23 ноября с 12 до 15','в субботу вечером',
-    '22 ноября с 18 до 17', 'с 14 до 16']) {
+    '22 ноября с 18 до 17', 'с 14 до 16',
+    '22 ноября с 15 до 16 или с 17 до 18',
+    '22.11 и 23.11 с 15 до 16']) {
     ctx.phrase = phrase;
     const parsed = exec('parseRussianSlot_(phrase, new Date(2026,10,19,12))');
     assert.equal(typeof parsed.error, 'string', phrase);
   }
+});
+
+test('free windows correctly subtract occupied half-hours', () => {
+  ctx.checkAvailability_ = () => ({free:false,
+    busy:[[360,420],[540,570],[570,600],[1260,1320]]});
+  const windows=exec("freeWindows_('2026-12-10',{})");
+  assert.deepEqual(JSON.parse(JSON.stringify(windows)),[
+    [420,540],[600,1260],
+  ]);
+});
+
+test('old trigger installer refuses reactivation of one-way sync', () => {
+  ctx.PropertiesService={getScriptProperties:()=>({getProperty:()=> 'true'})};
+  assert.throws(()=>exec('installTriggers()'),/Legacy trigger installer disabled/);
 });
 
 test('half-hour legacy cells block only the latter half of an hour', () => {
@@ -144,7 +160,7 @@ test('full sync creates, moves and deletes owned cells without touching others',
   };
   let rejectWrite = false;
   const getRange = (row, col, height, width) => {
-    if (row === 2 && col === 2) return {
+    if (row === 1 && col === 2) return {
       getDisplayValues: () => [Array.from({length:16},(_,i) => `${i + 6}:00-${i + 7}:00`)],
     };
     if (row === 6 && col === 1) return { getValues: () => [[today]] };
