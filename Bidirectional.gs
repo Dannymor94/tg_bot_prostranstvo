@@ -4,7 +4,7 @@
  * may change since the preceding successful reconciliation.
  *
  * Installable onEdit and Calendar event-updated triggers provide quick updates;
- * the fifteen-minute timer also catches edits that Google doesn't trigger.
+ * a twelve-hour timer also catches edits that Google doesn't trigger.
  */
 const BD = Object.freeze({
   prefix: 'BD_STATE_',
@@ -13,6 +13,8 @@ const BD = Object.freeze({
   days: 120,
   auditSheet: '_BD_AUDIT',
   maxAutomaticDeletes: 2,
+  apiIndexPrefix: 'BD_API_',
+  apiSyncToken: 'BD_CAL_SYNC_TOKEN',
   activeProperty: 'BIDIR_ACTIVE',
   bootstrapProperty: 'BIDIR_BOOTSTRAPPING',
   testSpreadsheet: '1FNufCunHlY5m4HAzBnRcZKRJtM7YfKKHcDehN8SGUxo',
@@ -190,6 +192,130 @@ function bdCalendarDays_(calendar, today, end, keys) {
   return { grouped, unsupported };
 }
 
+/** Read Calendar API deltas. A deleted event may have ONLY its API ID, so we
+ * keep a durable API-ID -> old day index (CalendarApp.getId uses iCalUID).
+ * API requests are under the reconciliation lock; never save a token early.
+ */
+function bdApiPage_(calendarId, syncToken, pageToken) {
+  const query = ['maxResults=2500', 'singleEvents=false', 'showDeleted=true'];
+  if (syncToken) query.push('syncToken=' + encodeURIComponent(syncToken));
+  if (pageToken) query.push('pageToken=' + encodeURIComponent(pageToken));
+  const url = 'https://www.googleapis.com/calendar/v3/calendars/' +
+    encodeURIComponent(calendarId) + '/events?' + query.join('&');
+  const response = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() } });
+  const status = response.getResponseCode();
+  if (status !== 200) {
+    const error = Error('Calendar API delta failed: HTTP ' + status);
+    error.httpStatus = status;
+    throw error;
+  }
+  const data = JSON.parse(response.getContentText());
+  if (data.items !== undefined && !Array.isArray(data.items)) {
+    throw Error('Calendar API response has invalid items');
+  }
+  return Object.assign({}, data, { items: data.items || [] });
+}
+
+function bdApiList_(calendarId, syncToken) {
+  const items = [];
+  let pageToken = null, newToken = null;
+  do {
+    const page = bdApiPage_(calendarId, syncToken, pageToken);
+    items.push(...page.items);
+    pageToken = page.nextPageToken || null;
+    if (!pageToken) newToken = page.nextSyncToken;
+    if (items.length > 20000) throw Error('Calendar API event limit exceeded');
+  } while (pageToken);
+  if (!newToken) throw Error('Calendar API response lacks nextSyncToken');
+  return { items, token: newToken };
+}
+
+function bdApiIndex_(props) {
+  const result = {};
+  const values = props.getProperties();
+  for (const [name, value] of Object.entries(values)) {
+    if (name.startsWith(BD.apiIndexPrefix)) {
+      result[name.slice(BD.apiIndexPrefix.length)] = value;
+    }
+  }
+  return result;
+}
+
+function bdApiEventDay_(item) {
+  const start = item.start || {};
+  if (start.date) return start.date;
+  if (start.dateTime) {
+    const parsed = new Date(start.dateTime);
+    if (!Number.isFinite(parsed.getTime())) throw Error('Invalid Calendar API event date');
+    return dayKey_(parsed);
+  }
+  return null; // Deleted-event tombstones commonly omit start/end entirely.
+}
+
+/** Pure delta projection; includes BOTH old and new day on a move/delete. */
+function bdApiChangePlan_(items, previous, today, full) {
+  const index = full ? {} : Object.assign({}, previous);
+  const keys = new Set();
+  for (const item of items) {
+    if (!item.id) throw Error('Calendar API event without ID');
+    const old = previous[item.id] || null;
+    const next = item.status === 'cancelled' ? null : bdApiEventDay_(item);
+    if (old && old >= today) keys.add(old);
+    if (next && next >= today) keys.add(next);
+    if (next && next >= today) index[item.id] = next;
+    else delete index[item.id];
+    if ((item.recurrence || item.recurringEventId) &&
+        ((old && old >= today) || (next && next >= today))) {
+      throw Error('Recurring Calendar events require manual review');
+    }
+  }
+  if (full) {
+    for (const old of Object.values(previous)) if (old >= today) keys.add(old);
+  }
+  return { keys: [...keys].sort(), index };
+}
+
+function bdCalendarDelta_(cfg, props, today) {
+  const priorToken = props.getProperty(BD.apiSyncToken);
+  const indexBefore = bdApiIndex_(props);
+  let full = !priorToken, reset = false, feed;
+  try { feed = bdApiList_(cfg.calendarId, priorToken); }
+  catch (error) {
+    if (error.httpStatus !== 410 || !priorToken) throw error;
+    full = true; reset = true;
+    feed = bdApiList_(cfg.calendarId, null);
+  }
+  const changed = bdApiChangePlan_(feed.items, indexBefore, dayKey_(today), full);
+  // First deployment preserves the established 120-day scope. A 410 recovery
+  // revisits all formerly indexed and currently present future event dates.
+  const keys = full && !reset ? bdDates_(today, BD.days) : changed.keys;
+  return { keys, index: changed.index, token: feed.token, full };
+}
+
+function bdCommitCalendarDelta_(props, delta) {
+  const current = bdApiIndex_(props);
+  for (const id of Object.keys(current)) {
+    if (!(id in delta.index)) props.deleteProperty(BD.apiIndexPrefix + id);
+  }
+  for (const [id, key] of Object.entries(delta.index)) {
+    if (current[id] !== key) props.setProperty(BD.apiIndexPrefix + id, key);
+  }
+  // The token is written LAST; if index update fails, retry the same delta.
+  props.setProperty(BD.apiSyncToken, delta.token);
+}
+
+/** Safe deployment check: reads the Calendar API but saves NO token or data. */
+function bdApiPreflight() {
+  const cfg = config_();
+  const props = PropertiesService.getScriptProperties();
+  bdWriteGuard_(cfg, props);
+  const delta = bdCalendarDelta_(cfg, props, localDay_(new Date()));
+  return { apiReachable: true, fullSync: delta.full,
+    knownEvents: Object.keys(delta.index).length, affectedDates: delta.keys.length,
+    tokenAlreadySaved: Boolean(props.getProperty(BD.apiSyncToken)) };
+}
+
 function bdWriteGuard_(cfg, props) {
   if (props.getProperty('WRITE_ENABLED') !== 'true') {
     throw Error('WRITE_ENABLED must be true for bidirectional writes');
@@ -349,11 +475,17 @@ function bdReconcile_(mode, selectedKeys) {
     }
     bdWriteGuard_(cfg, props);
     const today = localDay_(new Date());
-    const keys = selectedKeys
-      ? [...new Set(selectedKeys)].filter(k => /^\d{4}-\d\d-\d\d$/.test(k) && k >= dayKey_(today)).sort()
+    const delta = mode === 'calendar-delta' && !selectedKeys ?
+      bdCalendarDelta_(cfg, props, today) : null;
+    const selected = delta ? delta.keys : selectedKeys;
+    const keys = selected
+      ? [...new Set(selected)].filter(k => /^\d{4}-\d\d-\d\d$/.test(k) && k >= dayKey_(today)).sort()
       : bdDates_(today, BD.days);
-    if (!keys.length) return { mode, applied: true, days: 0, created: 0,
-      deleted: 0, updated: 0, sheetCells: 0, conflicts: [] };
+    if (!keys.length) {
+      if (delta) bdCommitCalendarDelta_(props, delta);
+      return { mode, applied: true, days: 0, created: 0,
+        deleted: 0, updated: 0, sheetCells: 0, conflicts: [] };
+    }
     const from = localDateFromKey_(keys[0]);
     const end = localDateFromKey_(keys[keys.length - 1]);
     end.setDate(end.getDate() + 1);
@@ -385,7 +517,14 @@ function bdReconcile_(mode, selectedKeys) {
       else if (plan.kind === 'conflict') conflicts.push(...plan.problems);
       else if (plan.kind !== 'none') plans.push({ key, source, events: grouped[key], prior, plan });
     }
-    if (mode === 'bootstrap' && conflicts.length) {
+    // A move can change TWO dates. Never clear its old day if the new day
+    // already has a conflict; reject the entire Calendar delta batch.
+    if ((mode === 'bootstrap' || mode === 'calendar-delta') && conflicts.length) {
+      props.setProperty('BD_LAST_SYNC', JSON.stringify({
+        at: new Date().toISOString(), mode, days: 0, conflicts: conflicts.length }));
+      if (mode === 'calendar-delta' && cfg.ownerChatId) {
+        alertOnChangedConflict_(cfg, conflicts);
+      }
       Logger.log(JSON.stringify({ mode, conflicts: conflicts.slice(0, 30) }));
       return { mode, applied: false, conflicts };
     }
@@ -426,6 +565,7 @@ function bdReconcile_(mode, selectedKeys) {
       days: appliedDays, created, deleted, updated, sheetCells, conflicts };
     props.setProperty('BD_LAST_SYNC', JSON.stringify({
       at: new Date().toISOString(), mode, days: appliedDays, conflicts: conflicts.length }));
+    if (delta && !conflicts.length) bdCommitCalendarDelta_(props, delta);
     if (conflicts.length && cfg.ownerChatId) {
       alertOnChangedConflict_(cfg, conflicts);
     }
@@ -473,7 +613,13 @@ function bdOnSheetEdit(event) {
 function bdOnCalendarChange(event) {
   const cfg = config_();
   if (event && event.calendarId && event.calendarId !== cfg.calendarId) return;
-  bdReconcile_('calendar-edit');
+  try { return bdReconcile_('calendar-delta'); }
+  catch (error) {
+    // If the REST API is temporarily unavailable, retain the previous token
+    // and use the established safe full-window reconciler as a fallback.
+    Logger.log('Calendar delta unavailable; falling back to full scan: ' + String(error.message));
+    return bdReconcile_('calendar-edit');
+  }
 }
 
 /** Inspect a crash journal; recover only days already converged exactly. */
@@ -545,7 +691,7 @@ function bdInstallTriggers() {
   // ordinary manual edits promptly; this is only a reconciliation fallback.
   triggers.filter(t => t.getHandlerFunction() === 'bdTimer')
     .forEach(t => ScriptApp.deleteTrigger(t));
-  ScriptApp.newTrigger('bdTimer').timeBased().everyMinutes(15).create();
+  ScriptApp.newTrigger('bdTimer').timeBased().everyHours(12).create();
   for (const old of triggers.filter(t => t.getHandlerFunction() === 'syncCalendarToSheet')) {
     ScriptApp.deleteTrigger(old);
   }
