@@ -107,6 +107,17 @@ test('free-slot list uses exact 30-minute steps, correct duration and avoids pas
   assert.ok(run(`tgUxCandidates_('${today}',30,'all')`).every(x => x >= current));
 });
 
+test('today in the past never receives a false free status', () => {
+  const { context, run } = setup();
+  const today = run('tgUxToday_()');
+  // The real service has Moscow time; simulate 20:00 without changing a date.
+  const oldUtilities=context.Utilities;
+  context.Utilities={formatDate:(d,tz,format)=>format === 'HH:mm' ? '20:00' : oldUtilities.formatDate(d,tz,format)};
+  const result = run(`tgUxResult_({date:'${today}',from:900,to:960})`);
+  assert.match(result.text, /уже прошло/);
+  assert.doesNotMatch(result.text, /Время свободно/);
+});
+
 test('Telegram callback acknowledgement, edit and update offset complete end-to-end', () => {
   const { context, run, saved } = setup();
   const today = run('tgUxToday_()');
