@@ -4,13 +4,15 @@
  * may change since the preceding successful reconciliation.
  *
  * Installable onEdit and Calendar event-updated triggers provide quick updates;
- * the five-minute timer also catches edits that Google doesn't trigger.
+ * the fifteen-minute timer also catches edits that Google doesn't trigger.
  */
 const BD = Object.freeze({
   prefix: 'BD_STATE_',
   marker: '[STUDIO_BIDIR_V1]',
   halfMarker: '(+30) Мин',
-  days: 60,
+  days: 120,
+  auditSheet: '_BD_AUDIT',
+  maxAutomaticDeletes: 2,
   activeProperty: 'BIDIR_ACTIVE',
   bootstrapProperty: 'BIDIR_BOOTSTRAPPING',
   testSpreadsheet: '1FNufCunHlY5m4HAzBnRcZKRJtM7YfKKHcDehN8SGUxo',
@@ -113,7 +115,12 @@ function bdPlanDay_(key, cells, events, prior, bootstrap = false) {
   if (projection.conflicts.length) return { kind: 'conflict', problems: projection.conflicts };
   const sheetChanged = prior ? !bdEqual_(sheetNow, prior.cells) : bdNonempty_(sheetNow);
   const calChanged = prior ? !bdEqual_(calNow, prior.events) : calNow.length > 0;
-  if (!sheetChanged && !calChanged) return { kind: 'none' };
+  // A checkpoint can never legitimize a divergent pair of sources, even if
+  // neither source has changed since the checkpoint was taken.
+  if (!sheetChanged && !calChanged) {
+    return bdEqual_(sheetNow, projection.cells) ? { kind: 'none' } :
+      { kind: 'conflict', problems: [key + ': checkpoint contains divergent sources'] };
+  }
   if (sheetChanged && calChanged) {
     if (bdEqual_(sheetNow, projection.cells)) return { kind: 'adopt' };
     if (!prior && bootstrap) {
@@ -233,6 +240,12 @@ function bdCreateFromSheet_(calendar, key, bookings, existing, prior) {
   if (unused.some(e => !checkpointed.has(e.meta.id))) {
     throw bdPreflightError_(key + ': refusing to delete an event absent from the previous snapshot');
   }
+  if (unused.some(e => e.event.isRecurringEvent && e.event.isRecurringEvent())) {
+    throw bdPreflightError_(key + ': recurring events require direct Calendar editing');
+  }
+  if (!pending.length && unused.length > BD.maxAutomaticDeletes) {
+    throw bdPreflightError_(key + ': bulk deletion needs explicit manual review');
+  }
   let updated = 0;
   // In a unique one-to-one edit keep the original Calendar event ID, guests,
   // reminders and description. Multiple candidates are ambiguous and require
@@ -243,8 +256,12 @@ function bdCreateFromSheet_(calendar, key, bookings, existing, prior) {
     }
     const target = pending.pop();
     const old = unused.pop();
-    if (old.event.isRecurringEvent && old.event.isRecurringEvent()) {
-      throw bdPreflightError_(key + ': recurring event cannot be edited from hourly grid');
+    if (old.meta.title !== target.title &&
+        (old.meta.start !== target.start || old.meta.end !== target.end)) {
+      throw bdPreflightError_(key + ': combined rename and move is ambiguous');
+    }
+    if (!bdEqual_(bdEventMeta_(old.event), old.meta)) {
+      throw bdPreflightError_(key + ': Calendar event changed during reconciliation');
     }
     if (old.meta.title !== target.title) old.event.setTitle(target.title);
     if (old.meta.start !== target.start || old.meta.end !== target.end) {
@@ -257,8 +274,45 @@ function bdCreateFromSheet_(calendar, key, bookings, existing, prior) {
     calendar.createEvent(booking.title, new Date(booking.start), new Date(booking.end),
       { description: BD.marker + ' Imported from test booking Sheet; edits synchronize both ways.' });
   }
-  for (const old of unused) old.event.deleteEvent();
+  for (const old of unused) {
+    if (!bdEqual_(bdEventMeta_(old.event), old.meta)) {
+      throw Error(key + ': Calendar event changed before deletion');
+    }
+    old.event.deleteEvent();
+  }
   return { created: pending.length, deleted: unused.length, updated };
+}
+
+/** A retained, timestamped record of every intended mutation, in the TEST Sheet. */
+function bdAudit_(sheet, key, source, events, plan) {
+  const book = sheet.getParent();
+  if (!book) throw Error('Cannot open spreadsheet audit log');
+  let audit = book.getSheetByName(BD.auditSheet);
+  if (!audit) {
+    audit = book.insertSheet(BD.auditSheet);
+    audit.appendRow(['Время (UTC)', 'Дата', 'Источник', 'До: таблица',
+      'До: календарь', 'План операции']);
+    audit.hideSheet();
+  }
+  audit.appendRow([new Date().toISOString(), key, plan.kind,
+    JSON.stringify(source.cells), JSON.stringify(bdSortMeta_(events)),
+    JSON.stringify(plan)]);
+}
+
+/** Both sources must still match the inputs from which the plan was built. */
+function bdPreflightDay_(calendar, sheet, key, source, events) {
+  const currentSheet = bdClean_(sheet.getRange(source.row, 2, 1, 16).getDisplayValues()[0]);
+  if (!bdEqual_(currentSheet, source.cells)) {
+    throw bdPreflightError_(key + ': Sheet changed before write');
+  }
+  const start = localDateFromKey_(key);
+  const end = new Date(start); end.setDate(end.getDate() + 1);
+  const current = bdCalendarDays_(calendar, start, end, [key]);
+  if (current.unsupported.length ||
+      !bdEqual_(bdSortMeta_(current.grouped[key].map(x => x.meta)),
+        bdSortMeta_(events.map(x => x.meta)))) {
+    throw bdPreflightError_(key + ': Calendar changed before write');
+  }
 }
 
 function bdWriteCells_(sheet, rowNumber, previous, desired) {
@@ -324,7 +378,11 @@ function bdReconcile_(mode, selectedKeys) {
         continue;
       }
       const plan = bdPlanDay_(key, source.cells, events, prior, mode === 'bootstrap');
-      if (plan.kind === 'conflict') conflicts.push(...plan.problems);
+      if (plan.kind === 'calendar' && prior &&
+          prior.events.length > BD.maxAutomaticDeletes && !events.length) {
+        conflicts.push(key + ': bulk Calendar deletion requires restoring or reviewing bookings');
+      }
+      else if (plan.kind === 'conflict') conflicts.push(...plan.problems);
       else if (plan.kind !== 'none') plans.push({ key, source, events: grouped[key], prior, plan });
     }
     if (mode === 'bootstrap' && conflicts.length) {
@@ -335,6 +393,8 @@ function bdReconcile_(mode, selectedKeys) {
     for (const item of plans) {
       const { key, source, events, prior, plan } = item;
       try {
+        bdPreflightDay_(calendar, sheet, key, source, events);
+        bdAudit_(sheet, key, source, events.map(x => x.meta), plan);
         props.setProperty('BD_PENDING_' + key,
           JSON.stringify({ mode, started: Date.now(), kind: plan.kind }));
         if (plan.kind === 'sheet') {
@@ -348,6 +408,11 @@ function bdReconcile_(mode, selectedKeys) {
         const currentEvents = calendar.getEvents(start, dayEnd).filter(e => !e.isAllDayEvent())
           .filter(e => dayKey_(e.getStartTime()) === key).map(bdEventMeta_);
         const currentSheet = sheet.getRange(source.row, 2, 1, 16).getDisplayValues()[0];
+        const projection = bdProject_(currentEvents, key);
+        if (projection.conflicts.length ||
+            !bdEqual_(bdClean_(currentSheet), projection.cells)) {
+          throw Error(key + ': postflight mismatch; transaction held for recovery');
+        }
         bdSave_(props, key, currentSheet, currentEvents);
         props.deleteProperty('BD_PENDING_' + key);
         appliedDays++;
