@@ -290,3 +290,17 @@ function tgUxMessage_(message, chatId) {
   try { return tgUxResult_(slot); }
   catch (error) { Logger.log('Telegram text check unavailable: ' + String(error.message)); return tgUxFailure_(); }
 }
+
+/** Safe GAS editor preflight: no Telegram messages, Calendar or Sheet writes. */
+function tgUxPreflight() {
+  const cfg = config_();
+  const menu = tgUxMenu_(cfg.ownerChatId || '');
+  const today = tgUxToday_();
+  const day = tgUxCallback_('u1|day|' + today, cfg.ownerChatId || '');
+  if (!menu.reply_markup?.inline_keyboard?.length ||
+      !day.reply_markup?.inline_keyboard?.length) throw Error('Telegram UX menu is unavailable');
+  Logger.log(JSON.stringify({ ready: true, date: today,
+    menuActions: menu.reply_markup.inline_keyboard.length,
+    durationActions: day.reply_markup.inline_keyboard.length }));
+  return 'Telegram UX read-only preflight passed';
+}
