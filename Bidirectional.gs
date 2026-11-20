@@ -206,7 +206,12 @@ function bdApiPage_(calendarId, syncToken, pageToken) {
     headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() } });
   const status = response.getResponseCode();
   if (status !== 200) {
-    const error = Error('Calendar API delta failed: HTTP ' + status);
+    let reason = 'unknown';
+    try {
+      const detail = JSON.parse(response.getContentText());
+      reason = String(detail.error?.errors?.[0]?.reason || detail.error?.status || 'unknown');
+    } catch (_error) { /* Do not log raw responses or OAuth credentials. */ }
+    const error = Error('Calendar API delta failed: HTTP ' + status + ', reason=' + reason);
     error.httpStatus = status;
     throw error;
   }
