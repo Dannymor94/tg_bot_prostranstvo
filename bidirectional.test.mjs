@@ -371,3 +371,135 @@ test('technical snapshot cleanup keeps recent dates and unrelated script propert
   assert.equal(state.get('BD_STATE_2026-11-18'),'recent');
   assert.ok(state.has('TELEGRAM_TOKEN'));
 });
+
+test('Calendar API delta moves an event across dates and touches both days', () => {
+  context.deltaItems=[{id:'api-a',status:'confirmed',
+    start:{dateTime:'2026-12-11T14:30:00+03:00'}}];
+  context.apiIndex={'api-a':'2026-12-10'};
+  const plan=plain(run("bdApiChangePlan_(deltaItems,apiIndex,'2026-11-20',false)"));
+  assert.deepEqual(plan.keys,['2026-12-10','2026-12-11']);
+  assert.equal(plan.index['api-a'],'2026-12-11');
+});
+
+test('Calendar API tombstone without start clears its indexed old date', () => {
+  context.deltaItems=[{id:'api-a',status:'cancelled'}];
+  context.apiIndex={'api-a':'2026-12-10','api-b':'2026-12-12'};
+  const plan=plain(run("bdApiChangePlan_(deltaItems,apiIndex,'2026-11-20',false)"));
+  assert.deepEqual(plan.keys,['2026-12-10']);
+  assert.deepEqual(plan.index,{'api-b':'2026-12-12'});
+});
+
+test('410 full refresh revisits removed, surviving, and newly created future days', () => {
+  context.deltaItems=[{id:'api-b',status:'confirmed',
+    start:{dateTime:'2027-04-11T12:00:00+03:00'}}];
+  context.apiIndex={'deleted-in-gap':'2027-03-10','api-b':'2027-04-10'};
+  const plan=plain(run("bdApiChangePlan_(deltaItems,apiIndex,'2026-11-20',true)"));
+  assert.deepEqual(plan.keys,['2027-03-10','2027-04-10','2027-04-11']);
+  assert.deepEqual(plan.index,{'api-b':'2027-04-11'});
+});
+
+test('Calendar API refuses future recurring series rather than silently misprojecting', () => {
+  context.deltaItems=[{id:'series-1',status:'confirmed',recurrence:['RRULE:FREQ=WEEKLY'],
+    start:{dateTime:'2026-12-11T14:00:00+03:00'}}];
+  assert.throws(()=>run("bdApiChangePlan_(deltaItems,{},'2026-11-20',false)"),
+    /Recurring/);
+});
+
+test('Calendar API syncToken pagination and authorization are bounded', () => {
+  const urls=[];
+  const page1={items:[{id:'a'}],nextPageToken:'next-page'};
+  const page2={items:[{id:'b'}],nextSyncToken:'new-sync'};
+  context.ScriptApp={getOAuthToken:()=> 'fake-oauth-token'};
+  context.UrlFetchApp={fetch:(url,options)=>{
+    assert.equal(options.headers.Authorization,'Bearer fake-oauth-token');
+    urls.push(url);
+    return {getResponseCode:()=>200,getContentText:()=>JSON.stringify(
+      urls.length===1?page1:page2)};
+  }};
+  const result=plain(run("bdApiList_('test@example.com','old-sync')"));
+  assert.deepEqual(result.items,[{id:'a'},{id:'b'}]);
+  assert.equal(result.token,'new-sync');
+  assert.match(urls[0],/syncToken=old-sync/);
+  assert.match(urls[1],/pageToken=next-page/);
+});
+
+test('Calendar API 410 reinitializes from full data without advancing token yet', () => {
+  const previous=context.bdApiList_;
+  const calls=[];
+  context.bdApiList_=(_calendar, token)=>{
+    calls.push(token);
+    if (token) { const err=Error('410');err.httpStatus=410;throw err; }
+    return {items:[{id:'api-a',status:'confirmed',
+      start:{dateTime:'2026-12-10T11:00:00+03:00'}}],token:'fresh-token'};
+  };
+  const properties=new Map([['BD_CAL_SYNC_TOKEN','stale-token'],
+    ['BD_API_deleted','2026-12-12']]);
+  context.apiProps={getProperty:k=>properties.get(k)||null,
+    getProperties:()=>Object.fromEntries(properties)};
+  context.deltaCfg={calendarId:'test@example.com'};
+  const result=plain(run('bdCalendarDelta_(deltaCfg,apiProps,new Date(2026,10,20))'));
+  assert.deepEqual(calls,['stale-token',null]);
+  assert.deepEqual(result.keys,['2026-12-10','2026-12-12']);
+  assert.equal(result.token,'fresh-token');
+  assert.equal(properties.get('BD_CAL_SYNC_TOKEN'),'stale-token');
+  context.bdApiList_=previous;
+});
+
+test('Calendar delta checkpoint writes event index before advancing sync token', () => {
+  const values=new Map([['BD_API_gone','2026-12-01'],
+    ['BD_API_old','2026-12-10'],['BD_CAL_SYNC_TOKEN','old-token']]);
+  const operations=[];
+  context.apiProps={getProperties:()=>Object.fromEntries(values),
+    setProperty:(k,v)=>{operations.push(k);values.set(k,v)},
+    deleteProperty:k=>{operations.push(k);values.delete(k)}};
+  context.deltaResult={index:{old:'2026-12-11',new:'2026-12-14'},token:'new-token'};
+  run('bdCommitCalendarDelta_(apiProps,deltaResult)');
+  assert.equal(operations.at(-1),'BD_CAL_SYNC_TOKEN');
+  assert.equal(values.get('BD_API_old'),'2026-12-11');
+  assert.equal(values.has('BD_API_gone'),false);
+  assert.equal(values.get('BD_CAL_SYNC_TOKEN'),'new-token');
+});
+
+test('Calendar API empty incremental page is a valid no-change response', () => {
+  const original={ScriptApp:context.ScriptApp,UrlFetchApp:context.UrlFetchApp};
+  context.ScriptApp={getOAuthToken:()=> 'fake-token'};
+  context.UrlFetchApp={fetch:()=>({getResponseCode:()=>200,
+    getContentText:()=>JSON.stringify({nextSyncToken:'next-token'})})};
+  const result=plain(run("bdApiList_('test@example.com','old-token')"));
+  assert.deepEqual(result,{items:[],token:'next-token'});
+  Object.assign(context,original);
+});
+
+test('Calendar delta commits only after a successful reconciliation and blocks conflicts', () => {
+  const names=['bdCalendarDelta_','bdReadDays_','bdCalendarDays_','config_',
+    'sheet_','calendar_','LockService','PropertiesService','Logger'];
+  const original=Object.fromEntries(names.map(name=>[name,context[name]]));
+  const values=new Map([['WRITE_ENABLED','true'],['BIDIR_ACTIVE','true']]);
+  const props={getProperty:k=>values.get(k)||null,
+    getProperties:()=>Object.fromEntries(values),
+    setProperty:(k,v)=>values.set(k,String(v)),
+    deleteProperty:k=>values.delete(k)};
+  const key='2026-12-10';
+  context.bdCalendarDelta_=()=>({keys:[key],token:'new-token',
+    index:{'api-event':key},full:false});
+  context.bdReadDays_=()=>({[key]:{row:2055,cells:Array(16).fill('')}});
+  context.bdCalendarDays_=()=>({grouped:{[key]:[]},unsupported:[]});
+  context.config_=()=>({spreadsheetId:'1FNufCunHlY5m4HAzBnRcZKRJtM7YfKKHcDehN8SGUxo',
+    calendarId:'48dcda42a1404258847154571d9d674473f8580900e3fd5e7b6ca049cbc863b8@group.calendar.google.com'});
+  context.sheet_=()=>({});context.calendar_=()=>({});
+  context.LockService={getScriptLock:()=>({tryLock:()=>true,releaseLock:()=>{}})};
+  context.PropertiesService={getScriptProperties:()=>props};
+  context.Logger={log:()=>{}};
+  const result=plain(run("bdReconcile_('calendar-delta')"));
+  assert.equal(result.applied,true);
+  assert.equal(values.get('BD_CAL_SYNC_TOKEN'),'new-token');
+  assert.equal(values.get('BD_API_api-event'),key);
+  // A conflict in one selected date must not commit a delta checkpoint.
+  values.set('BD_CAL_SYNC_TOKEN','old-token');
+  context.bdCalendarDays_=()=>({grouped:{[key]:[]},unsupported:[key+': all-day event']});
+  const blocked=plain(run("bdReconcile_('calendar-delta')"));
+  assert.equal(blocked.applied,false);
+  assert.equal(values.get('BD_CAL_SYNC_TOKEN'),'old-token');
+  assert.match(blocked.conflicts[0],/all-day/);
+  Object.assign(context,original);
+});
