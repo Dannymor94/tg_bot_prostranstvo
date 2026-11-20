@@ -4,7 +4,9 @@
  * may change since the preceding successful reconciliation.
  *
  * Installable onEdit and Calendar event-updated triggers provide quick updates;
- * a twelve-hour timer also catches edits that Google doesn't trigger.
+ * a fallback timer catches edits that Google doesn't trigger. Keep the
+ * installed 15-minute timer until the Calendar REST API becomes available;
+ * only then reinstall it as twelve-hour backup via bdInstallTriggers().
  */
 const BD = Object.freeze({
   prefix: 'BD_STATE_',
@@ -480,8 +482,16 @@ function bdReconcile_(mode, selectedKeys) {
     }
     bdWriteGuard_(cfg, props);
     const today = localDay_(new Date());
-    const delta = mode === 'calendar-delta' && !selectedKeys ?
-      bdCalendarDelta_(cfg, props, today) : null;
+    let delta = null;
+    if (mode === 'calendar-delta' && !selectedKeys) {
+      try { delta = bdCalendarDelta_(cfg, props, today); }
+      catch (error) {
+        // Only a failure BEFORE reconciliation starts may use the full-scan
+        // fallback. Post-write errors must never start a second writer.
+        error.calendarDeltaUnavailable = true;
+        throw error;
+      }
+    }
     const selected = delta ? delta.keys : selectedKeys;
     const keys = selected
       ? [...new Set(selected)].filter(k => /^\d{4}-\d\d-\d\d$/.test(k) && k >= dayKey_(today)).sort()
@@ -522,12 +532,12 @@ function bdReconcile_(mode, selectedKeys) {
       else if (plan.kind === 'conflict') conflicts.push(...plan.problems);
       else if (plan.kind !== 'none') plans.push({ key, source, events: grouped[key], prior, plan });
     }
-    // A move can change TWO dates. Never clear its old day if the new day
-    // already has a conflict; reject the entire Calendar delta batch.
-    if ((mode === 'bootstrap' || mode === 'calendar-delta') && conflicts.length) {
+    // A move can change TWO dates. Reject conflicting Calendar batches even
+    // when the REST API is unavailable and the trigger uses a full scan.
+    if (['bootstrap', 'calendar-delta', 'calendar-edit'].includes(mode) && conflicts.length) {
       props.setProperty('BD_LAST_SYNC', JSON.stringify({
         at: new Date().toISOString(), mode, days: 0, conflicts: conflicts.length }));
-      if (mode === 'calendar-delta' && cfg.ownerChatId) {
+      if (mode !== 'bootstrap' && cfg.ownerChatId) {
         alertOnChangedConflict_(cfg, conflicts);
       }
       Logger.log(JSON.stringify({ mode, conflicts: conflicts.slice(0, 30) }));
@@ -594,8 +604,31 @@ function bdImportExistingBookings() {
   return report;
 }
 
-/** Existing five-minute trigger should be retargeted to this function. */
-function bdTimer() { return bdReconcile_('timer'); }
+/** A small, rate-limited operational alarm. Never mask the original failure. */
+function bdRecordFailure_(mode, error) {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const now = Date.now();
+    props.setProperty('BD_LAST_ERROR', JSON.stringify({
+      at: new Date(now).toISOString(), mode, type: 'execution_failed',
+    }));
+    const cfg = config_();
+    if (!cfg.ownerChatId || now - Number(props.getProperty('BD_ALERT_AT') || 0) < 6 * 3600000) return;
+    // Reserve the alert window first so repeated trigger failures cannot spam.
+    props.setProperty('BD_ALERT_AT', String(now));
+    try {
+      sendTelegram_(cfg.telegramToken, cfg.ownerChatId,
+        '⚠️ Синхронизация аренды завершилась с ошибкой (' + mode + ').\n' +
+        'Новые свободные интервалы могут быть не подтверждены. Проверь /status и выполнения GAS.');
+    } catch (_sendError) { Logger.log('Unable to send the owner sync-failure alert'); }
+  } catch (_reportError) { Logger.log('Unable to record sync-failure status'); }
+}
+
+/** Timer remains 15 minutes until the Calendar API 403 is resolved. */
+function bdTimer() {
+  try { return bdReconcile_('timer'); }
+  catch (error) { bdRecordFailure_('timer', error); throw error; }
+}
 
 /** Installable onEdit trigger, bound to the exact test spreadsheet ID. */
 function bdOnSheetEdit(event) {
@@ -611,7 +644,10 @@ function bdOnSheetEdit(event) {
   const count = range.getLastRow() - first + 1;
   const keys = sheet.getRange(first, 1, count, 1).getValues()
     .map(x => x[0] instanceof Date ? dayKey_(x[0]) : null).filter(Boolean);
-  if (keys.length) bdReconcile_('sheet-edit', keys);
+  if (keys.length) {
+    try { return bdReconcile_('sheet-edit', keys); }
+    catch (error) { bdRecordFailure_('sheet-edit', error); throw error; }
+  }
 }
 
 /** Installable Calendar 'Event updated' trigger (event doesn't identify change). */
@@ -620,10 +656,17 @@ function bdOnCalendarChange(event) {
   if (event && event.calendarId && event.calendarId !== cfg.calendarId) return;
   try { return bdReconcile_('calendar-delta'); }
   catch (error) {
-    // If the REST API is temporarily unavailable, retain the previous token
-    // and use the established safe full-window reconciler as a fallback.
-    Logger.log('Calendar delta unavailable; falling back to full scan: ' + String(error.message));
-    return bdReconcile_('calendar-edit');
+    if (!error.calendarDeltaUnavailable) {
+      bdRecordFailure_('calendar-delta', error);
+      throw error;
+    }
+    // The REST API failed BEFORE any write. Its token was not advanced.
+    Logger.log('Calendar API unavailable; using all-or-nothing full scan');
+    try { return bdReconcile_('calendar-edit'); }
+    catch (fallbackError) {
+      bdRecordFailure_('calendar-edit', fallbackError);
+      throw fallbackError;
+    }
   }
 }
 
