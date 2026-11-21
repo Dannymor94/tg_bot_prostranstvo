@@ -1,0 +1,46 @@
+name: Studio calendar GAS checks
+
+on:
+  push:
+    branches:
+      - feature/bidirectional-sheet-calendar-20261120
+    paths:
+      - '*.gs'
+      - '*.test.mjs'
+      - 'appsscript.json'
+      - '.github/workflows/studio-calendar-tests.yml'
+  pull_request:
+    paths:
+      - '*.gs'
+      - '*.test.mjs'
+      - 'appsscript.json'
+      - '.github/workflows/studio-calendar-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gas-tests:
+    name: Validate Apps Script and run 48 regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Use Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Check GAS source syntax
+        shell: bash
+        run: |
+          for file in Code.gs Bidirectional.gs TelegramUX.gs; do
+            node --check --input-type=commonjs < "$file"
+          done
+      - name: Run deterministic regression tests
+        env:
+          TZ: Europe/Moscow
+        run: node --test *.test.mjs
