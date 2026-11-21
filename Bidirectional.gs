@@ -17,6 +17,7 @@ const BD = Object.freeze({
   maxAutomaticDeletes: 2,
   apiIndexPrefix: 'BD_API_',
   apiSyncToken: 'BD_CAL_SYNC_TOKEN',
+  targetBinding: 'BD_TARGET_BINDING',
   activeProperty: 'BIDIR_ACTIVE',
   bootstrapProperty: 'BIDIR_BOOTSTRAPPING',
   testSpreadsheet: '1FNufCunHlY5m4HAzBnRcZKRJtM7YfKKHcDehN8SGUxo',
@@ -101,8 +102,8 @@ function bdProject_(events, key) {
   return { cells: desired, conflicts: collisions };
 }
 
-function bdState_(properties, key) {
-  const raw = properties.getProperty(BD.prefix + key);
+function bdState_(properties, key, snapshot) {
+  const raw = snapshot ? snapshot[BD.prefix + key] : properties.getProperty(BD.prefix + key);
   return raw ? JSON.parse(raw) : null;
 }
 function bdSave_(properties, key, cells, events) {
@@ -327,11 +328,41 @@ function bdWriteGuard_(cfg, props) {
   if (props.getProperty('WRITE_ENABLED') !== 'true') {
     throw Error('WRITE_ENABLED must be true for bidirectional writes');
   }
+  const target = cfg.spreadsheetId + '|' + cfg.calendarId;
+  const bound = props.getProperty(BD.targetBinding);
+  if (bound && bound !== target) {
+    throw Error('Calendar/Sheet target changed; existing checkpoints belong to another target');
+  }
   if (cfg.spreadsheetId === BD.testSpreadsheet && cfg.calendarId === BD.testCalendar) return;
   if (props.getProperty('BIDIR_PRODUCTION_APPROVED') !==
-      cfg.spreadsheetId + '|' + cfg.calendarId) {
+      target) {
     throw Error('Production IDs not explicitly approved; refusing bidirectional writes');
   }
+  if (bound !== target) {
+    throw Error('Production target not bound: use bdBindFreshTarget in a fresh GAS project');
+  }
+}
+
+/** One-time explicit binding for a NEW production GAS project, without any
+ * test checkpoints. Reusing test Script Properties must never clear live rows. */
+function bdBindFreshTarget() {
+  const cfg = config_();
+  const props = PropertiesService.getScriptProperties();
+  const target = cfg.spreadsheetId + '|' + cfg.calendarId;
+  if (cfg.spreadsheetId === BD.testSpreadsheet && cfg.calendarId === BD.testCalendar) {
+    throw Error('Test target needs no production binding');
+  }
+  if (props.getProperty('WRITE_ENABLED') !== 'true' ||
+      props.getProperty('BIDIR_PRODUCTION_APPROVED') !== target) {
+    throw Error('Explicit production approval and WRITE_ENABLED required');
+  }
+  const values = props.getProperties();
+  const stale = Object.keys(values).filter(k => k.startsWith(BD.prefix) ||
+    k.startsWith(BD.apiIndexPrefix) || k.startsWith('BD_PENDING_') ||
+    k === BD.apiSyncToken || k === BD.activeProperty || k === BD.targetBinding);
+  if (stale.length) throw Error('Refusing to bind production with existing sync checkpoints');
+  props.setProperty(BD.targetBinding, target);
+  return 'Fresh target bound. Production bootstrap requires separate review.';
 }
 
 function bdPreflightError_(message) {
@@ -449,19 +480,28 @@ function bdPreflightDay_(calendar, sheet, key, source, events) {
 }
 
 function bdWriteCells_(sheet, rowNumber, previous, desired) {
+  const row = sheet.getRange(rowNumber, 2, 1, 16);
+  if (!bdEqual_(bdClean_(row.getDisplayValues()[0]), previous)) {
+    throw Error('Row ' + rowNumber + ': concurrent Sheet modification');
+  }
+  // Write only contiguous runs of changed cells: unchanged formula cells and
+  // validation remain untouched. One flush per row, not one per cell.
   let count = 0;
-  for (let i = 0; i < 16; i++) {
-    if (previous[i] === desired[i]) continue;
-    const cell = sheet.getRange(rowNumber, i + 2);
-    if (String(cell.getDisplayValue()).trim() !== previous[i]) {
-      throw Error(cell.getA1Notation() + ': concurrent Sheet modification');
+  for (let i = 0; i < 16;) {
+    if (previous[i] === desired[i]) { i++; continue; }
+    const start = i;
+    while (i < 16 && previous[i] !== desired[i]) i++;
+    const target = sheet.getRange(rowNumber, start + 2, 1, i - start);
+    const current = target.getDisplayValues()[0].map(x => String(x).trim());
+    if (!bdEqual_(current, previous.slice(start, i))) {
+      throw Error(target.getA1Notation() + ': concurrent Sheet modification');
     }
-    cell.setValue(desired[i]);
-    SpreadsheetApp.flush();
-    if (String(cell.getDisplayValue()).trim() !== desired[i]) {
-      throw Error(cell.getA1Notation() + ': Sheet rejected write');
-    }
-    count++;
+    target.setValues([desired.slice(start, i)]);
+    count += i - start;
+  }
+  if (count) SpreadsheetApp.flush();
+  if (!bdEqual_(bdClean_(row.getDisplayValues()[0]), desired)) {
+    throw Error('Row ' + rowNumber + ': Sheet rejected write');
   }
   return count;
 }
@@ -472,8 +512,12 @@ function bdWriteCells_(sheet, rowNumber, previous, desired) {
  */
 function bdReconcile_(mode, selectedKeys) {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(20000)) throw Error('Bidirectional sync already running');
+  if (!lock.tryLock(mode === 'timer' ? 0 : 20000)) {
+    if (mode === 'timer') return { mode, skipped: true, reason: 'another reconciliation running' };
+    throw Error('Bidirectional sync already running');
+  }
   try {
+    const startedAt = Date.now();
     const cfg = config_();
     const props = PropertiesService.getScriptProperties();
     if (props.getProperty('BIDIR_PAUSED') === 'true') return { paused: true };
@@ -507,7 +551,10 @@ function bdReconcile_(mode, selectedKeys) {
     const sheet = sheet_(cfg);
     const calendar = calendar_(cfg);
     const dates = bdReadDays_(sheet, keys);
+    Logger.log('BD reconcile reading Calendar events for ' + keys.length + ' dates');
     const { grouped, unsupported } = bdCalendarDays_(calendar, from, end, keys);
+    const readMs = Date.now() - startedAt;
+    const propertySnapshot = props.getProperties();
     const plans = [];
     const conflicts = unsupported.slice();
     const blockedDays = new Set(unsupported.map(s => s.slice(0, 10)));
@@ -515,8 +562,8 @@ function bdReconcile_(mode, selectedKeys) {
       if (blockedDays.has(key)) continue;
       const source = dates[key];
       const events = grouped[key].map(x => x.meta);
-      const prior = bdState_(props, key);
-      if (props.getProperty('BD_PENDING_' + key)) {
+      const prior = bdState_(props, key, propertySnapshot);
+      if (propertySnapshot['BD_PENDING_' + key]) {
         conflicts.push(key + ': incomplete transaction requires recovery');
         continue;
       }
@@ -532,6 +579,7 @@ function bdReconcile_(mode, selectedKeys) {
       else if (plan.kind === 'conflict') conflicts.push(...plan.problems);
       else if (plan.kind !== 'none') plans.push({ key, source, events: grouped[key], prior, plan });
     }
+    const planMs = Date.now() - startedAt - readMs;
     // A move can change TWO dates. Reject conflicting Calendar batches even
     // when the REST API is unavailable and the trigger uses a full scan.
     if (['bootstrap', 'calendar-delta', 'calendar-edit'].includes(mode) && conflicts.length) {
@@ -540,7 +588,7 @@ function bdReconcile_(mode, selectedKeys) {
       if (mode !== 'bootstrap' && cfg.ownerChatId) {
         alertOnChangedConflict_(cfg, conflicts);
       }
-      Logger.log(JSON.stringify({ mode, conflicts: conflicts.slice(0, 30) }));
+      Logger.log(JSON.stringify({ mode, conflicts: conflicts.slice(0, 30), readMs, planMs }));
       return { mode, applied: false, conflicts };
     }
     let created = 0, deleted = 0, updated = 0, sheetCells = 0, appliedDays = 0;
@@ -577,7 +625,8 @@ function bdReconcile_(mode, selectedKeys) {
     }
     bdCleanupState_(props, today);
     const report = { mode, applied: conflicts.length === 0, partial: conflicts.length > 0,
-      days: appliedDays, created, deleted, updated, sheetCells, conflicts };
+      days: appliedDays, created, deleted, updated, sheetCells, conflicts,
+      timingMs: { read: readMs, plan: planMs, write: Date.now() - startedAt - readMs - planMs } };
     props.setProperty('BD_LAST_SYNC', JSON.stringify({
       at: new Date().toISOString(), mode, days: appliedDays, conflicts: conflicts.length }));
     if (delta && !conflicts.length) bdCommitCalendarDelta_(props, delta);
@@ -672,6 +721,9 @@ function bdOnCalendarChange(event) {
 
 /** Inspect a crash journal; recover only days already converged exactly. */
 function bdRecoverPending() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) throw Error('Cannot recover while reconciliation is running');
+  try {
   const cfg = config_();
   const props = PropertiesService.getScriptProperties();
   bdWriteGuard_(cfg, props);
@@ -701,6 +753,7 @@ function bdRecoverPending() {
     recovered.push(key);
   }
   return { recovered, blocked };
+  } finally { lock.releaseLock(); }
 }
 
 function bdPause() {
@@ -728,6 +781,13 @@ function bdInstallTriggers() {
       cfg.calendarId !== BD.testCalendar) {
     throw Error('Trigger installation is TEST-only');
   }
+  // A twelve-hour fallback is safe only after the Calendar incremental feed
+  // was successfully read and its token committed. Do not weaken fallback
+  // coverage while the Calendar REST API still returns accessNotConfigured.
+  if (!PropertiesService.getScriptProperties().getProperty(BD.apiSyncToken)) {
+    throw Error('Calendar API sync token not committed; keep the existing 15-minute fallback');
+  }
+  bdApiPreflight(); // read-only; throw BEFORE removing any existing trigger
   const triggers = ScriptApp.getProjectTriggers();
   if (!triggers.some(t => t.getHandlerFunction() === 'bdOnSheetEdit')) {
     ScriptApp.newTrigger('bdOnSheetEdit').forSpreadsheet(cfg.spreadsheetId).onEdit().create();
@@ -743,5 +803,6 @@ function bdInstallTriggers() {
   for (const old of triggers.filter(t => t.getHandlerFunction() === 'syncCalendarToSheet')) {
     ScriptApp.deleteTrigger(old);
   }
+  PropertiesService.getScriptProperties().setProperty('BD_TIMER_HOURS', '12');
   return ScriptApp.getProjectTriggers().map(t => t.getHandlerFunction());
 }

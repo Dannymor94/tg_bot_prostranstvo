@@ -521,15 +521,28 @@ function answerTelegram_(text, chatId) {
 
 function telegramApi_(token, method, payload) {
   if (!token) throw Error('Set TELEGRAM_TOKEN in Script properties');
-  const response = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true,
-  });
-  const json = JSON.parse(response.getContentText());
+  let response;
+  try {
+    response = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+  } catch (_transportError) {
+    // Apps Script's UrlFetch exception embeds the COMPLETE URL (including the
+    // bot token). Never propagate or log its original message or stack.
+    throw Error('Telegram ' + method + ': network unavailable');
+  }
+  let json;
+  try { json = JSON.parse(response.getContentText()); }
+  catch (_parseError) {
+    throw Error('Telegram ' + method + ': invalid response (HTTP ' + response.getResponseCode() + ')');
+  }
   if (response.getResponseCode() !== 200 || !json.ok) {
-    throw Error('Telegram ' + method + ': ' + (json.description || response.getResponseCode()));
+    const detail = String(json.description || response.getResponseCode())
+      .replace(/\b\d{7,12}:[A-Za-z0-9_-]{20,}/g, '[REDACTED]');
+    throw Error('Telegram ' + method + ': ' + detail);
   }
   return json.result;
 }
@@ -540,8 +553,28 @@ function sendTelegram_(token, chatId, text, markup) {
   return telegramApi_(token, 'sendMessage', payload);
 }
 
-/** Durable, bounded Telegram outbox. The update offset advances only AFTER
- * the reply is persisted, so one blocked chat cannot stall other users. */
+/** Keep failed replies for manual replay. Never silently drop an update after
+ * three transport failures; store the dead letter BEFORE deleting its outbox. */
+function tgDeadLetter_(cfg, props, key, entry) {
+  const deadKey = key.replace(/^TG_OUTBOX_/, 'TG_DEAD_');
+  props.setProperty(deadKey, JSON.stringify(Object.assign({}, entry, {
+    failedAt: new Date().toISOString(), reason: 'delivery_failed',
+  })));
+  props.setProperty('TG_FAILED_COUNT',
+    String(Number(props.getProperty('TG_FAILED_COUNT') || 0) + 1));
+  props.deleteProperty(key);
+  const now = Date.now();
+  if (!cfg.ownerChatId || now - Number(props.getProperty('TG_DELIVERY_ALERT_AT') || 0) < 6 * 3600000) return;
+  props.setProperty('TG_DELIVERY_ALERT_AT', String(now));
+  try {
+    sendTelegram_(cfg.telegramToken, cfg.ownerChatId,
+      '⚠️ Telegram не доставил ответ после трёх попыток. ' +
+      'Сообщение сохранено; проверь /status и функцию tgRetryFailedReplies в GAS.');
+  } catch (_error) { Logger.log('Telegram dead-letter owner alert unavailable'); }
+}
+
+/** Durable Telegram outbox. The update offset advances only AFTER its reply
+ * is persisted, so a failed chat does not stall every other user. */
 function tgDeliverOutbox_(cfg, props, onlyKey) {
   const keys = onlyKey ? [onlyKey] : Object.keys(props.getProperties())
     .filter(k => k.startsWith('TG_OUTBOX_')).sort().slice(0, 20);
@@ -550,7 +583,11 @@ function tgDeliverOutbox_(cfg, props, onlyKey) {
     if (!raw) continue;
     let entry;
     try { entry = JSON.parse(raw); }
-    catch (error) { Logger.log(key + ': corrupt outbox entry'); props.deleteProperty(key); continue; }
+    catch (_error) {
+      // Preserve malformed evidence instead of deleting the only copy.
+      Logger.log(key + ': corrupt outbox entry requires operator review');
+      continue;
+    }
     if (entry.nextAt && Date.now() < entry.nextAt) continue;
     try {
       if (entry.editMessageId) {
@@ -572,15 +609,44 @@ function tgDeliverOutbox_(cfg, props, onlyKey) {
     } catch (error) {
       entry.attempts = (entry.attempts || 0) + 1;
       if (entry.attempts >= 3) {
-        props.setProperty('TG_FAILED_COUNT', String(Number(props.getProperty('TG_FAILED_COUNT') || 0) + 1));
-        props.deleteProperty(key);
-        Logger.log(key + ': response delivery abandoned after three attempts');
+        tgDeadLetter_(cfg, props, key, entry);
+        Logger.log(key + ': response moved to dead-letter queue after three attempts');
       } else {
         entry.nextAt = Date.now() + Math.pow(2, entry.attempts - 1) * 60000;
         props.setProperty(key, JSON.stringify(entry));
       }
     }
   }
+}
+
+/** Operator-only GAS function: manually retry at most 20 preserved replies. */
+function tgRetryFailedReplies() {
+  const lock = LockService.getUserLock();
+  if (!lock.tryLock(1000)) return { skipped: true, reason: 'Telegram poll running' };
+  try {
+    const cfg = config_();
+    const props = PropertiesService.getScriptProperties();
+    const keys = Object.keys(props.getProperties()).filter(k => /^TG_DEAD_\d+$/.test(k)).sort().slice(0, 20);
+    const moved = [];
+    for (const key of keys) {
+      const id = key.slice('TG_DEAD_'.length);
+      const outbox = 'TG_OUTBOX_' + id;
+      if (props.getProperty(outbox)) continue;
+      const entry = JSON.parse(props.getProperty(key));
+      delete entry.failedAt;
+      delete entry.reason;
+      entry.attempts = 0;
+      entry.nextAt = 0;
+      props.setProperty(outbox, JSON.stringify(entry));
+      props.deleteProperty(key);
+      moved.push(outbox);
+    }
+    // Deliver the exact batch we requeued, even if older pending updates also
+    // occupy the first 20 sorted outbox slots.
+    moved.forEach(key => tgDeliverOutbox_(cfg, props, key));
+    return { retried: moved.length, remainingDeadLetters:
+      Object.keys(props.getProperties()).filter(k => /^TG_DEAD_\d+$/.test(k)).length };
+  } finally { lock.releaseLock(); }
 }
 
 /** Minute-triggered pull: no public web app and no Google credential exposed. */

@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   gas-tests:
-    name: Validate Apps Script and run 48 regression tests
+    name: Validate Apps Script and run 59 regression tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

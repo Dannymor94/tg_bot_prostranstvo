@@ -278,12 +278,14 @@ test('full loop: import, Sheet edit, Calendar move, delete, idempotency', () => 
     getRange(row,col,height=1,width=1) {
       if(row===1&&col===2) return {getDisplayValues:()=>[Array.from({length:16},(_,i)=>`${i+6}:00-${i+7}:00`)]};
       if(row===6&&col===1) return {getValues:()=>[[today],[tomorrow]]};
-      if(row>=6&&row<=7&&col===2&&width===16) return {
-        getDisplayValues:()=>cells.slice(row-6,row-6+height).map(x=>x.slice())};
       if(row>=6&&row<=7&&col>=2&&col<=17) return {
+        getDisplayValues:()=>cells.slice(row-6,row-6+height).map(x=>x.slice(col-2,col-2+width)),
         getDisplayValue:()=>cells[row-6][col-2],
         getA1Notation:()=>String.fromCharCode(65+col-1)+row,
         setValue:v=>{cells[row-6][col-2]=v},
+        setValues:values=>{values.forEach((line,r)=>line.forEach((value,c)=>{
+          cells[row-6+r][col-2+c]=value;
+        }));},
       };
       throw Error('Unexpected Sheet range '+[row,col,height,width]);
     },
@@ -351,6 +353,10 @@ test('production write requires exact approval for target Sheet and Calendar', (
     k==='BIDIR_PRODUCTION_APPROVED'?approval:null};
   assert.throws(()=>run('bdWriteGuard_(otherCfg,guardProps)'), /not explicitly approved/);
   approval='prod-sheet|prod-calendar';
+  assert.throws(()=>run('bdWriteGuard_(otherCfg,guardProps)'), /not bound/);
+  context.guardProps={getProperty:k=>k==='WRITE_ENABLED'?'true':
+    k==='BIDIR_PRODUCTION_APPROVED'?approval:
+      k==='BD_TARGET_BINDING'?'prod-sheet|prod-calendar':null};
   assert.doesNotThrow(()=>run('bdWriteGuard_(otherCfg,guardProps)'));
   context.guardProps={getProperty:k=>k==='WRITE_ENABLED'?'false':
     k==='BIDIR_PRODUCTION_APPROVED'?approval:null};

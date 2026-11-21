@@ -216,10 +216,12 @@ function tgUxStatus_(chatId) {
   let status;
   try { status = JSON.parse(props.BD_LAST_SYNC || 'null'); } catch (_error) { status = null; }
   const pending = Object.keys(props).filter(key => key.startsWith('BD_PENDING_')).length;
+  const failedReplies = Object.keys(props).filter(key => /^TG_DEAD_\d+$/.test(key)).length;
+  const maximumAge = props.BD_TIMER_HOURS === '12' ? 14 * 3600000 : 30 * 60000;
   const stamp = status && status.at ? Utilities.formatDate(new Date(status.at), STUDIO.timezone, 'dd.MM HH:mm') : 'нет данных';
   const tooOld = !status || !status.at ||
     !Number.isFinite(new Date(status.at).getTime()) ||
-    Date.now() - new Date(status.at).getTime() > 30 * 60000;
+    Date.now() - new Date(status.at).getTime() > maximumAge;
   let lastError;
   try { lastError = JSON.parse(props.BD_LAST_ERROR || 'null'); }
   catch (_error) { lastError = null; }
@@ -230,13 +232,14 @@ function tgUxStatus_(chatId) {
   const lines = ['⚙️ Состояние расписания',
     'Синхронизация: ' + (props.BIDIR_PAUSED === 'true' ? '⏸ пауза' : props.BIDIR_ACTIVE === 'true' ? '🟢 включена' : '⚠️ неактивна'),
     'Последняя сверка: ' + stamp + ' МСК',
-    'Актуальность сверки: ' + (tooOld ? '⚠️ более 30 минут / нет данных' : 'недавно'),
+    'Актуальность сверки: ' + (tooOld ? '⚠️ нет недавней сверки' : 'в пределах резервного интервала'),
     'Последняя ошибка: ' + (unresolvedError ? '⚠️ после последней сверки (' +
       lastError.mode + ')' : 'нет новых'),
     'Конфликтов: ' + (status ? status.conflicts : 'нет данных'),
     'Незавершённых операций: ' + pending,
     'Точный Calendar API: ' + (props.BD_CAL_SYNC_TOKEN ? 'токен получен' : 'токен ещё не получен'),
-    'Ошибок доставки Telegram: ' + (props.TG_FAILED_COUNT || '0')];
+    'Ошибок доставки Telegram (всего): ' + (props.TG_FAILED_COUNT || '0'),
+    'Ожидают повторной отправки: ' + failedReplies];
   return tgUxReply_(lines.join('\n'), [[tgUxButton_('🔄 Обновить', 'u1|status')], tgUxMainButton_()]);
 }
 function tgUxExpired_() {
