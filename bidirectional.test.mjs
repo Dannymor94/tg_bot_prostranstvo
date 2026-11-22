@@ -280,6 +280,7 @@ test('full loop: import, Sheet edit, Calendar move, delete, idempotency', () => 
       if(row===6&&col===1) return {getValues:()=>[[today],[tomorrow]]};
       if(row>=6&&row<=7&&col>=2&&col<=17) return {
         getDisplayValues:()=>cells.slice(row-6,row-6+height).map(x=>x.slice(col-2,col-2+width)),
+        getFormulas:()=>Array.from({length:height},()=>Array(width).fill('')),
         getDisplayValue:()=>cells[row-6][col-2],
         getA1Notation:()=>String.fromCharCode(65+col-1)+row,
         setValue:v=>{cells[row-6][col-2]=v},
@@ -397,11 +398,38 @@ test('Calendar API tombstone without start clears its indexed old date', () => {
 
 test('410 full refresh revisits removed, surviving, and newly created future days', () => {
   context.deltaItems=[{id:'api-b',status:'confirmed',
-    start:{dateTime:'2027-04-11T12:00:00+03:00'}}];
-  context.apiIndex={'deleted-in-gap':'2027-03-10','api-b':'2027-04-10'};
+    start:{dateTime:'2027-03-11T12:00:00+03:00'}}];
+  context.apiIndex={'deleted-in-gap':'2027-03-09','api-b':'2027-03-10'};
   const plan=plain(run("bdApiChangePlan_(deltaItems,apiIndex,'2026-11-20',true)"));
-  assert.deepEqual(plan.keys,['2027-03-10','2027-04-10','2027-04-11']);
-  assert.deepEqual(plan.index,{'api-b':'2027-04-11'});
+  assert.deepEqual(plan.keys,['2027-03-09','2027-03-10','2027-03-11']);
+  assert.deepEqual(plan.index,{'api-b':'2027-03-11'});
+});
+
+test('Calendar API drops out-of-horizon updates and garbage-collects stale event IDs', () => {
+  context.deltaItems=[
+    {id:'very-far',status:'confirmed',start:{dateTime:'2028-01-01T15:00:00+03:00'}},
+    {id:'new-inside',status:'confirmed',start:{dateTime:'2026-12-25T15:00:00+03:00'}},
+  ];
+  context.apiIndex={'ancient':'2021-05-01','old-far':'2027-06-01',
+    'still-inside':'2026-12-10'};
+  const plan=plain(run("bdApiChangePlan_(deltaItems,apiIndex,'2026-11-20',false)"));
+  assert.deepEqual(plan.keys,['2026-12-25']);
+  assert.deepEqual(plan.index,{
+    'still-inside':'2026-12-10',
+    'new-inside':'2026-12-25',
+  });
+});
+
+test('Calendar API includes the last day of 120-day window, excludes the next', () => {
+  const last=run('bdDates_(new Date(2026,10,20),120)[119]');
+  const after=run('bdDates_(new Date(2026,10,20),121)[120]');
+  context.deltaItems=[
+    {id:'last',status:'confirmed',start:{date:last}},
+    {id:'after',status:'confirmed',start:{date:after}},
+  ];
+  const plan=plain(run("bdApiChangePlan_(deltaItems,{},'2026-11-20',false)"));
+  assert.deepEqual(plan.keys,[last]);
+  assert.deepEqual(plan.index,{last});
 });
 
 test('Calendar API refuses future recurring series rather than silently misprojecting', () => {
