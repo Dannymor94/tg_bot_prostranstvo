@@ -100,7 +100,9 @@ function tgUxDay_(date) {
   ]);
 }
 function tgUxCandidates_(date, duration, part) {
-  const windows = freeWindows_(date, config_());
+  return tgUxCandidatesFromWindows_(date, duration, part, freeWindows_(date, config_()));
+}
+function tgUxCandidatesFromWindows_(date, duration, part, windows) {
   const candidates = [];
   const earliest = date === tgUxToday_() ? tgUxLocalNowMinutes_() : 0;
   const limits = { all: [360, 1320], morning: [360, 720],
@@ -156,11 +158,15 @@ function tgUxWeek_(first) {
   const rows = [];
   const lines = ['🗓 Ближайшие 7 дней — краткий обзор',
     'Свободные окна от 1 часа (московское время):', ''];
-  for (let i = 0; i < 7; i++) {
-    const key = tgUxAddDays_(first, i);
-    if (!tgUxValidDate_(key)) break;
+  const dates = Array.from({ length: 7 }, (_, i) => tgUxAddDays_(first, i))
+    .filter(key => tgUxValidDate_(key));
+  let week = {};
+  try { week = freeWindowsBatch_(dates, config_()); }
+  catch (_error) { /* Do not claim availability when the bulk read failed. */ }
+  for (const key of dates) {
     try {
-      const starts = tgUxCandidates_(key, 60, 'all');
+      if (!Array.isArray(week[key])) throw Error('Week not confirmed');
+      const starts = tgUxCandidatesFromWindows_(key, 60, 'all', week[key]);
       lines.push(tgUxDateLabel_(key) + ': ' +
         (starts.length ? '🟢 ' + formatStudioTime_(starts[0]) + ' и ещё ' +
           (starts.length - 1) + ' вариантов' : '🔴 свободных окон нет'));
@@ -240,6 +246,11 @@ function tgUxStatus_(chatId) {
     'Точный Calendar API: ' + (props.BD_CAL_SYNC_TOKEN ? 'токен получен' : 'токен ещё не получен'),
     'Ошибок доставки Telegram (всего): ' + (props.TG_FAILED_COUNT || '0'),
     'Ожидают повторной отправки: ' + failedReplies];
+  if (pending) lines.push('🚧 Есть незавершённая запись. Сверь оба источника и запусти bdRecoverPending() в GAS.');
+  else if (status && status.conflicts > 0) {
+    lines.push('⚠️ Есть конфликт. Сравни брони в календаре и таблице; скрипт не перезаписал спорные данные.');
+  }
+  if (failedReplies) lines.push('📩 Для повторной отправки проверь чат и запусти tgRetryFailedReplies() в GAS.');
   return tgUxReply_(lines.join('\n'), [[tgUxButton_('🔄 Обновить', 'u1|status')], tgUxMainButton_()]);
 }
 function tgUxExpired_() {
@@ -297,11 +308,17 @@ function tgUxMessage_(message, chatId) {
           tgUxButton_('1,5 часа', 'u1|windows|' + day.date + '|90|all|0')], tgUxMainButton_()]);
     } catch (error) { Logger.log('Telegram /free unavailable: ' + String(error.message)); return tgUxFailure_(); }
   }
-  const clauses = input.split(/[;\n]+/).map(x => x.trim()).filter(Boolean);
-  if (clauses.length > 1) {
-    return tgUxReply_(answerTelegram_(input, chatId), [tgUxMainButton_()]);
-  }
+  // A forwarded request often has the date and time on different lines.
+  // Parse the whole message first; split only genuinely separate requests.
   const slot = parseRussianSlot_(input, new Date());
+  const clauses = input.split(/[;\n]+/).map(x => x.trim()).filter(Boolean);
+  if (slot.error && clauses.length > 1) {
+    const separateSlots = clauses.map(x => parseRussianSlot_(x, new Date()));
+    if (clauses.length <= 5 && separateSlots.every(x => !x.error)) {
+      try { return tgUxReply_(answerTelegram_(input, chatId), [tgUxMainButton_()]); }
+      catch (_error) { return tgUxFailure_(); }
+    }
+  }
   if (slot.error) return tgUxReply_(slot.error + '\n\nМожно выбрать дату и время кнопками.',
     [[tgUxButton_('📅 Выбрать дату', 'u1|dates|' + tgUxToday_())], tgUxMainButton_()]);
   try { return tgUxResult_(slot); }
