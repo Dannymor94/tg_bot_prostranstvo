@@ -90,6 +90,7 @@ test('batch writes touch changed ranges only and flush once', () => {
   const written = [];
   ctx.testSheet = { getRange: (row, column, _height = 1, width = 1) => ({
     getDisplayValues: () => [cells.slice(column - 2, column - 2 + width)],
+    getFormulas: () => [Array(width).fill('')],
     getA1Notation: () => 'R' + row + 'C' + column,
     setValues: values => {
       written.push({ column, width });
@@ -111,12 +112,63 @@ test('concurrent Sheet edit blocks batch before any overwrite', () => {
   let writes = 0;
   ctx.testSheet = { getRange: (_row, col, _height, width) => ({
     getDisplayValues: () => [cells.slice(col - 2, col - 2 + width)],
+    getFormulas: () => [Array(width).fill('')],
     setValues: () => { writes++; }, getA1Notation: () => 'test-range',
   }) };
   ctx.testOld = Array(16).fill('');
   ctx.testNext = Array(16).fill(''); ctx.testNext[2] = 'Бронь';
   assert.throws(() => run('bdWriteCells_(testSheet,42,testOld,testNext)'), /concurrent Sheet modification/);
   assert.equal(writes, 0);
+});
+
+test('calendar projection never replaces a changed formula cell', () => {
+  const { ctx, run, flushCount } = fixture();
+  const cells = Array(16).fill(''); cells[4] = 'Результат формулы';
+  let writes = 0;
+  ctx.testSheet = { getRange: (_row, col, _height = 1, width = 1) => ({
+    getDisplayValues: () => [cells.slice(col - 2, col - 2 + width)],
+    getFormulas: () => [cells.slice(col - 2, col - 2 + width)
+      .map((_value, i) => col - 2 + i === 4 ? '=A1' : '')],
+    setValues: () => { writes++; },
+  }) };
+  ctx.oldCells = cells.slice(); ctx.newCells = cells.slice(); ctx.newCells[4] = 'Бронь';
+  assert.throws(() => run('bdWriteCells_(testSheet,88,oldCells,newCells)'),
+    /refusing to replace formula/);
+  assert.equal(writes, 0);
+  assert.equal(flushCount(), 0);
+});
+
+test('weekly overview reads Sheet and Calendar once and fails closed per day', () => {
+  const { ctx, run, entries } = fixture();
+  entries.set('BIDIR_ACTIVE', 'false');
+  const days = ['2026-12-11', '2026-12-12'];
+  let rowScans = 0, calendarReads = 0, sheetReads = 0;
+  ctx.dateRows_ = (_sheet, keys) => {
+    rowScans++;
+    return Object.fromEntries(keys.map((key, index) => [key, 100 + index]));
+  };
+  ctx.sheet_ = () => ({ getRange: () => ({ getDisplayValues: () => {
+    sheetReads++;
+    return [Array(16).fill(''), Array(16).fill('')];
+  } }) });
+  const booked = {
+    isAllDayEvent: () => false,
+    getStartTime: () => new Date(2026, 11, 11, 15),
+    getEndTime: () => new Date(2026, 11, 11, 16),
+    getId: () => 'busy', getTitle: () => 'Private',
+  };
+  ctx.calendar_ = () => ({ getEvents: () => { calendarReads++; return [booked]; } });
+  ctx.days = days;
+  const result = run('freeWindowsBatch_(days, config_())');
+  assert.equal(rowScans, 1);
+  assert.equal(sheetReads, 1);
+  assert.equal(calendarReads, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(result[days[0]])), [[360,900],[960,1320]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result[days[1]])), [[360,1320]]);
+  entries.set('BD_PENDING_2026-12-12', 'unfinished');
+  const unsafe = run('freeWindowsBatch_(days, config_())');
+  assert.equal(unsafe[days[1]], null);
+  assert.ok(Array.isArray(unsafe[days[0]]));
 });
 
 test('timer contention is a benign skip, not an operational failure', () => {
