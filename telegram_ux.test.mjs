@@ -34,6 +34,8 @@ function setup() {
   context.config_ = () => ({calendarId: 'test-calendar', spreadsheetId: 'test-sheet',
     label: 'Тест', telegramToken: 'fake', ownerChatId: '42'});
   context.freeWindows_ = () => [[360, 720], [900, 1200]];
+  context.freeWindowsBatch_ = dates => Object.fromEntries(
+    dates.map(key => [key, [[360, 720], [900, 1200]]]));
   context.checkAvailability_ = slot => ({ free: slot.from !== 930,
     busy: slot.from === 930 ? [[930, 990]] : [] });
   return { context, run, saved, props };
@@ -167,6 +169,28 @@ test('forwarded text and /start produce readable Telegram messages with working 
   assert.ok(sent[1].payload.reply_markup.inline_keyboard.some(row =>
     row.some(button => /Перепроверить/.test(button.text))));
   assert.equal(saved.get('TG_OFFSET'), '63');
+});
+
+test('forwarded message with date and time on separate lines parses one slot', () => {
+  const { run } = setup();
+  const tomorrow = run('tgUxAddDays_(tgUxToday_(), 1)');
+  const [year, month, day] = tomorrow.split('-');
+  const response = run(`tgUxMessage_(${JSON.stringify(
+    `Здравствуйте! Можно ${day}.${month}.${year}\nс 15:00 до 16:00?`)}, 101)`);
+  assert.match(response.text, /Время свободно/);
+  assert.doesNotMatch(response.text, /Укажи интервал|Укажи дату/);
+  assert.ok(response.reply_markup.inline_keyboard.flat().some(b =>
+    /Перепроверить/.test(b.text)));
+});
+
+test('two independent forwarded slots remain two checks', () => {
+  const { run } = setup();
+  const tomorrow = run('tgUxAddDays_(tgUxToday_(), 1)');
+  const dayAfter = run(`tgUxAddDays_('${tomorrow}', 1)`);
+  const russianDate = key => key.split('-').reverse().join('.');
+  const response = run(`tgUxMessage_(${JSON.stringify(
+    `${russianDate(tomorrow)} с 15 до 16; ${russianDate(dayAfter)} с 17 до 18`)}, 101)`);
+  assert.equal((response.text.match(/По известному расписанию свободно/g) || []).length, 2);
 });
 
 test('callback edit retries transient errors using a durable outbox entry', () => {
