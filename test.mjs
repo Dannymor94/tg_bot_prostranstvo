@@ -105,11 +105,77 @@ test('dates and time phrases are parsed without LLM', () => {
 
 test('ambiguous requests are rejected', () => {
   for (const phrase of ['22 и 23 ноября с 12 до 15','в субботу вечером',
-    '22 ноября с 18 до 17', 'с 14 до 16']) {
+    '22 ноября с 18 до 17', 'с 14 до 16',
+    '22 ноября с 15 до 16 или с 17 до 18',
+    '22.11 и 23.11 с 15 до 16']) {
     ctx.phrase = phrase;
     const parsed = exec('parseRussianSlot_(phrase, new Date(2026,10,19,12))');
     assert.equal(typeof parsed.error, 'string', phrase);
   }
+});
+
+test('next weekday, explicit year and contradictory weekday are handled correctly', () => {
+  const now = 'new Date(2026,10,20,14)'; // Friday
+  for (const [phrase, expected] of [
+    ['в следующую пятницу с 15 до 16','2026-11-27'],
+    ['22 ноября 2026 с 15 до 16','2026-11-22'],
+  ]) {
+    ctx.phrase=phrase;
+    assert.equal(exec(`parseRussianSlot_(phrase,${now})`).date,expected);
+  }
+  for (const phrase of ['22 ноября 2025 с 15 до 16',
+    'завтра 22 ноября с 15 до 16',
+    '22 ноября в субботу с 15 до 16']) {
+    ctx.phrase=phrase;
+    assert.equal(typeof exec(`parseRussianSlot_(phrase,${now})`).error,'string');
+  }
+});
+
+test('Telegram outbox isolates a blocked chat and counts exhausted delivery', () => {
+  const values=new Map([
+    ['TG_OUTBOX_1',JSON.stringify({chatId:1,reply:'a',attempts:0,nextAt:0})],
+    ['TG_OUTBOX_2',JSON.stringify({chatId:2,reply:'b',attempts:0,nextAt:0})],
+  ]);
+  const props={getProperties:()=>Object.fromEntries(values),
+    getProperty:k=>values.get(k)||null,setProperty:(k,v)=>values.set(k,String(v)),
+    deleteProperty:k=>values.delete(k)};
+  ctx.testProps=props;ctx.sent=[];
+  const oldSend=ctx.sendTelegram_;const oldLogger=ctx.Logger;
+  ctx.sendTelegram_=(_token,id,reply)=>{
+    if (id===1) throw Error('blocked');
+    ctx.sent.push([id,reply]);
+  };
+  ctx.Logger={log:()=>{}};
+  exec("tgDeliverOutbox_({telegramToken:'test'},testProps)");
+  assert.deepEqual(ctx.sent,[[2,'b']]);
+  assert.equal(values.has('TG_OUTBOX_2'),false);
+  for(let attempt=1;attempt<3;attempt++){
+    const pending=JSON.parse(values.get('TG_OUTBOX_1'));
+    pending.nextAt=0;values.set('TG_OUTBOX_1',JSON.stringify(pending));
+    exec("tgDeliverOutbox_({telegramToken:'test'},testProps)");
+  }
+  assert.equal(values.get('TG_FAILED_COUNT'),'1');
+  assert.equal(values.has('TG_OUTBOX_1'),false);
+  ctx.sendTelegram_=oldSend;ctx.Logger=oldLogger;
+});
+
+test('free windows correctly subtract occupied half-hours', () => {
+  ctx.checkAvailability_ = () => ({free:false,
+    busy:[[360,420],[540,570],[570,600],[1260,1320]]});
+  const windows=exec("freeWindows_('2026-12-10',{})");
+  assert.deepEqual(JSON.parse(JSON.stringify(windows)),[
+    [420,540],[600,1260],
+  ]);
+});
+
+test('old trigger installer refuses reactivation of one-way sync', () => {
+  ctx.PropertiesService={getScriptProperties:()=>({getProperty:()=> 'true'})};
+  assert.throws(()=>exec('installTriggers()'),/Legacy trigger installer disabled/);
+});
+
+test('old one-way synchronization cannot be executed directly when bidirectional is active', () => {
+  ctx.PropertiesService={getScriptProperties:()=>({getProperty:()=> 'true'})};
+  assert.throws(()=>exec('syncCalendarToSheet()'),/Legacy writer disabled/);
 });
 
 test('half-hour legacy cells block only the latter half of an hour', () => {
@@ -144,7 +210,7 @@ test('full sync creates, moves and deletes owned cells without touching others',
   };
   let rejectWrite = false;
   const getRange = (row, col, height, width) => {
-    if (row === 2 && col === 2) return {
+    if (row === 1 && col === 2) return {
       getDisplayValues: () => [Array.from({length:16},(_,i) => `${i + 6}:00-${i + 7}:00`)],
     };
     if (row === 6 && col === 1) return { getValues: () => [[today]] };

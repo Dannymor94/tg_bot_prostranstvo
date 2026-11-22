@@ -199,6 +199,10 @@ function eventItems_(calendar, from, to) {
  * Calendar edit/move/delete propagates to previously owned cells.
  */
 function syncCalendarToSheet() {
+  // The obsolete one-way writer must not run even if manually selected in GAS.
+  if (PropertiesService.getScriptProperties().getProperty('BIDIR_ACTIVE') === 'true') {
+    throw Error('Legacy writer disabled while bidirectional sync is active');
+  }
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) throw Error('Sync already running');
   try {
@@ -272,16 +276,32 @@ function syncCalendarToSheet() {
 }
 
 function alertOnChangedConflict_(cfg, conflicts) {
+  if (!cfg.ownerChatId) return;
   const p = PropertiesService.getScriptProperties();
   const signature = conflicts.slice().sort().join('|');
   if (p.getProperty('LAST_CONFLICT') === signature) return;
-  sendTelegram_(cfg.telegramToken, cfg.ownerChatId,
-    '⚠️ Конфликты синхронизации:\n' + conflicts.slice(0, 15).join('\n'));
-  p.setProperty('LAST_CONFLICT', signature);
+  try {
+    sendTelegram_(cfg.telegramToken, cfg.ownerChatId,
+      '⚠️ Конфликты синхронизации:\n' + conflicts.slice(0, 15).join('\n'));
+    p.setProperty('LAST_CONFLICT', signature);
+  } catch (_error) {
+    // Owner notifications are best effort. A Telegram outage must not undo a
+    // successful booking reconciliation or invalidate its Calendar sync token.
+    Logger.log('Unable to deliver the owner conflict alert');
+  }
 }
 
 function parseRussianSlot_(text, now) {
   const s = String(text || '').toLowerCase().replace(/ё/g, 'е').replace(/[–—]/g, '-');
+  const intervals = [...s.matchAll(/(?:^|\s)(?:с\s*|от\s*)?(\d{1,2})(?::\d{2})?\s*(?:до|по|-)\s*(\d{1,2})(?::\d{2})?(?=\D|$)/g)];
+  if (intervals.length > 1) {
+    return { error: 'Укажи один интервал времени или отправь отдельные запросы.' };
+  }
+  const numericDates = s.match(/(?:^|[^\d])[0-3]?\d[./][01]?\d(?:[./]\d{2,4})?/g) || [];
+  const namedDates = s.match(/\b[0-3]?\d\s+(?:январ[а-я]*|феврал[а-я]*|март[а-я]*|апрел[а-я]*|мая|май|июн[а-я]*|июл[а-я]*|август[а-я]*|сентябр[а-я]*|октябр[а-я]*|ноябр[а-я]*|декабр[а-я]*)/g) || [];
+  if (numericDates.length + namedDates.length > 1) {
+    return { error: 'Укажи одну дату в сообщении или отправь отдельные запросы.' };
+  }
   if (/\b\d{1,2}\s+и\s+\d{1,2}\s+(?:январ|феврал|март|апрел|мая|июн|июл|август|сентябр|октябр|ноябр|декабр)/.test(s)) {
     return { error: 'Укажи одну дату в сообщении (или отправь отдельные запросы).' };
   }
@@ -301,23 +321,27 @@ function parseRussianSlot_(text, now) {
     date = new Date(today); date.setDate(date.getDate() + 1);
   } else if (/(?:^|[^а-я])сегодня(?:$|[^а-я])/.test(s)) date = today;
   const numeric = s.match(/(?:^|[^\d])([0-3]?\d)[./]([01]?\d)(?:[./](\d{2,4}))?(?!\d)/);
-  if (!date && numeric && Number(numeric[2]) >= 1 && Number(numeric[2]) <= 12) {
-    let year = numeric[3] ? Number(numeric[3]) : today.getFullYear();
+  if (numeric && Number(numeric[2]) >= 1 && Number(numeric[2]) <= 12) {
+    let year = numeric[3] ? Number(numeric[3]) : (date || today).getFullYear();
     if (year < 100) year += 2000;
-    date = new Date(year, Number(numeric[2]) - 1, Number(numeric[1]));
-    if (!numeric[3] && date < today) date.setFullYear(date.getFullYear() + 1);
-    if (date.getDate() !== Number(numeric[1])) return { error: 'Некорректная дата.' };
+    const specified = new Date(year, Number(numeric[2]) - 1, Number(numeric[1]));
+    if (!numeric[3] && specified < today && !date) specified.setFullYear(specified.getFullYear() + 1);
+    if (specified.getDate() !== Number(numeric[1])) return { error: 'Некорректная дата.' };
+    if (date && dayKey_(date) !== dayKey_(specified)) return { error: 'В сообщении указаны противоречивые даты.' };
+    date = specified;
   }
   const months = ['январ', 'феврал', 'март', 'апрел', 'мая', 'июн', 'июл',
     'август', 'сентябр', 'октябр', 'ноябр', 'декабр'];
-  const named = s.match(/(?:^|\s)([0-3]?\d)\s+(январ\w*|феврал\w*|март\w*|апрел\w*|мая|май|июн\w*|июл\w*|август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*)(?:\s+(20\d{2}))?/);
-  if (!date && named) {
+  const named = s.match(/(?:^|\s)([0-3]?\d)\s+(январ[а-я]*|феврал[а-я]*|март[а-я]*|апрел[а-я]*|мая|май|июн[а-я]*|июл[а-я]*|август[а-я]*|сентябр[а-я]*|октябр[а-я]*|ноябр[а-я]*|декабр[а-я]*)(?:\s+(20\d{2}))?/);
+  if (named) {
     const month = months.findIndex(x => named[2].startsWith(x) || (x === 'мая' && named[2] === 'май'));
     if (month < 0) return { error: 'Не удалось разобрать месяц.' };
-    const year = named[3] ? Number(named[3]) : today.getFullYear();
-    date = new Date(year, month, Number(named[1]));
-    if (date.getMonth() !== month || date.getDate() !== Number(named[1])) return { error: 'Некорректная дата.' };
-    if (!named[3] && date < today) date.setFullYear(date.getFullYear() + 1);
+    const year = named[3] ? Number(named[3]) : (date || today).getFullYear();
+    const specified = new Date(year, month, Number(named[1]));
+    if (specified.getMonth() !== month || specified.getDate() !== Number(named[1])) return { error: 'Некорректная дата.' };
+    if (!named[3] && specified < today && !date) specified.setFullYear(specified.getFullYear() + 1);
+    if (date && dayKey_(date) !== dayKey_(specified)) return { error: 'В сообщении указаны противоречивые даты.' };
+    date = specified;
   }
   if (!date) {
     const dayOnly = s.match(/(?:^|[^\d])([0-3]?\d)-(?:го|е)(?:$|[^а-я])/);
@@ -331,18 +355,26 @@ function parseRussianSlot_(text, now) {
       }
     }
   }
-  if (!date) {
-    const shortDay = w => new RegExp('(?:^|[^а-я])' + w + '(?:$|[^а-я])').test(s);
-    const weekday = [shortDay('вс') || /воскресен/.test(s), shortDay('пн') || /понедел/.test(s),
-      shortDay('вт') || /вторник/.test(s), shortDay('ср') || /сред[ауые]/.test(s),
-      shortDay('чт') || /четверг/.test(s), shortDay('пт') || /пятниц/.test(s),
-      shortDay('сб') || /суббот/.test(s)].findIndex(Boolean);
-    if (weekday >= 0) {
-      date = new Date(today);
-      date.setDate(date.getDate() + ((weekday - today.getDay() + 7) % 7));
-    }
+  const shortDay = w => new RegExp('(?:^|[^а-я])' + w + '(?:$|[^а-я])').test(s);
+  const mentionedWeekdays = [shortDay('вс') || /воскресен/.test(s),
+    shortDay('пн') || /понедел/.test(s), shortDay('вт') || /вторник/.test(s),
+    shortDay('ср') || /сред[ауые]/.test(s), shortDay('чт') || /четверг/.test(s),
+    shortDay('пт') || /пятниц/.test(s), shortDay('сб') || /суббот/.test(s)];
+  if (mentionedWeekdays.filter(Boolean).length > 1) {
+    return { error: 'Укажи один день недели.' };
+  }
+  const weekday = mentionedWeekdays.findIndex(Boolean);
+  if (weekday >= 0 && date && weekday !== date.getDay()) {
+    return { error: 'Указанная дата не совпадает с днём недели.' };
+  }
+  if (!date && weekday >= 0) {
+    date = new Date(today);
+    const offset = (weekday - today.getDay() + 7) % 7;
+    const nextWeek = /(?:^|[^а-я])(?:следующ[а-я]*|будущ[а-я]*)(?:$|[^а-я])/.test(s);
+    date.setDate(date.getDate() + offset + (nextWeek ? 7 : 0));
   }
   if (!date) return { error: 'Укажи дату: «22 ноября», «22.11», «завтра» или день недели.' };
+  if (date < today) return { error: 'Указанная дата уже прошла.' };
   if (a < STUDIO.firstHour * 60 || b > STUDIO.lastHour * 60) {
     return { error: 'В таблице расписание только с 06:00 до 22:00.' };
   }
@@ -351,38 +383,137 @@ function parseRussianSlot_(text, now) {
 
 function overlaps_(a, b, c, d) { return a < d && b > c; }
 
-function checkAvailability_(slot, cfg) {
-  const sheet = sheet_(cfg);
-  const rows = dateRows_(sheet, [slot.date]);
-  if (!rows[slot.date]) throw Error('Date not present in booking sheet: ' + slot.date);
-  const row = sheet.getRange(rows[slot.date], 2, 1, 16).getDisplayValues()[0];
-  const properties = PropertiesService.getScriptProperties();
-  if (Object.keys(properties.getProperties()).some(x => x.startsWith('PENDING_'))) {
-    throw Error('Sync transaction incomplete; availability cannot be confirmed');
+/** Shared fail-closed per-day calculation for single and batched checks. */
+function studioBusyForDay_(slot, row, calendarEvents, properties, bidirectional, allProperties) {
+  if (Object.keys(allProperties).some(x => x.startsWith('PENDING_')) ||
+      allProperties['BD_PENDING_' + slot.date] ||
+      (bidirectional && allProperties.BIDIR_PAUSED === 'true')) {
+    throw Error('Sync is pending or paused; availability cannot be confirmed');
   }
-  const ledger = ledger_(properties, slot.date);
+  const exactEvents = calendarEvents.filter(e => !e.isAllDayEvent() &&
+    dayKey_(e.getStartTime()) === slot.date &&
+    dayKey_(new Date(e.getEndTime().getTime() - 1)) === slot.date);
+  const metas = exactEvents.map(bdEventMeta_);
+  const projection = bidirectional ? bdProject_(metas, slot.date) : null;
+  if (projection && projection.conflicts.length) {
+    throw Error('Calendar contains unrepresentable or overlapping bookings');
+  }
+  if (bidirectional) {
+    const prior = bdState_(properties, slot.date);
+    const state = bdPlanDay_(slot.date, row, metas, prior);
+    if (!['none', 'adopt'].includes(state.kind) ||
+        calendarEvents.some(e => !e.isAllDayEvent() && !exactEvents.includes(e))) {
+      throw Error('Sheet and Calendar have not yet converged');
+    }
+  }
+  const ledger = bidirectional ? {} : ledger_(properties, slot.date);
   const busy = [];
+  const start = localDateFromKey_(slot.date);
   for (let h = STUDIO.firstHour; h < STUDIO.lastHour; h++) {
     const value = String(row[h - STUDIO.firstHour] || '');
     if (!value.trim()) continue;
-    if (ledger[String(h)] === value) continue; // use exact live Calendar intervals instead
+    if (projection && projection.cells[h - STUDIO.firstHour] === value.trim()) continue;
+    if (!bidirectional && ledger[String(h)] === value) continue;
     const begin = h * 60 + (/^\s*\(\s*\+30\s*\)/.test(value) ? 30 : 0);
-    const end = (h + 1) * 60;
-    if (overlaps_(slot.from, slot.to, begin, end)) busy.push([begin, end]);
+    const endHour = (h + 1) * 60;
+    if (overlaps_(slot.from, slot.to, begin, endHour)) busy.push([begin, endHour]);
   }
-  const start = localDateFromKey_(slot.date);
-  const end = new Date(start); end.setDate(end.getDate() + 1);
-  calendar_(cfg).getEvents(start, end).forEach(e => {
+  calendarEvents.forEach(e => {
     const from = e.isAllDayEvent() ? 0 : Math.max(0,
       Math.round((e.getStartTime().getTime() - start.getTime()) / 60000));
     const to = e.isAllDayEvent() ? 1440 : Math.min(1440,
       Math.round((e.getEndTime().getTime() - start.getTime()) / 60000));
     if (overlaps_(slot.from, slot.to, from, to)) busy.push([Math.max(0, from), Math.min(1440, to)]);
   });
-  return { free: busy.length === 0, busy };
+  return busy;
 }
 
-function answerTelegram_(text) {
+function checkAvailability_(slot, cfg) {
+  const properties = PropertiesService.getScriptProperties();
+  const bidirectional = properties.getProperty('BIDIR_ACTIVE') === 'true' &&
+    typeof bdProject_ === 'function';
+  // Share the writer's lock: never answer from a partly written Sheet row.
+  const lock = bidirectional ? LockService.getScriptLock() : null;
+  if (lock && !lock.tryLock(1500)) throw Error('Synchronization in progress');
+  try {
+    const allProperties = properties.getProperties();
+    const sheet = sheet_(cfg);
+    const rows = dateRows_(sheet, [slot.date]);
+    if (!rows[slot.date]) throw Error('Date not present in booking sheet: ' + slot.date);
+    const row = sheet.getRange(rows[slot.date], 2, 1, 16).getDisplayValues()[0];
+    const start = localDateFromKey_(slot.date);
+    const end = new Date(start); end.setDate(end.getDate() + 1);
+    const calendarEvents = calendar_(cfg).getEvents(start, end);
+    const busy = studioBusyForDay_(slot, row, calendarEvents, properties,
+      bidirectional, allProperties);
+    return { free: busy.length === 0, busy };
+  } finally { if (lock) lock.releaseLock(); }
+}
+
+function formatStudioTime_(minutes) {
+  return String(Math.floor(minutes / 60)).padStart(2, '0') + ':' +
+    String(minutes % 60).padStart(2, '0');
+}
+
+function freeWindowsFromBusy_(busy) {
+  const opening = STUDIO.firstHour * 60;
+  const closing = STUDIO.lastHour * 60;
+  const free = [];
+  let started = null;
+  for (let minute = opening; minute <= closing; minute += 30) {
+    const occupied = minute < closing &&
+      busy.some(([a, b]) => overlaps_(minute, minute + 30, a, b));
+    if (!occupied && started === null && minute < closing) started = minute;
+    if ((occupied || minute === closing) && started !== null) {
+      free.push([started, minute]);
+      started = null;
+    }
+  }
+  return free;
+}
+
+function freeWindows_(date, cfg) {
+  const busy = checkAvailability_({ date, from: STUDIO.firstHour * 60,
+    to: STUDIO.lastHour * 60 }, cfg).busy;
+  return freeWindowsFromBusy_(busy);
+}
+
+/** Weekly view: one Sheet scan and one Calendar query instead of seven of each. */
+function freeWindowsBatch_(dates, cfg) {
+  if (!dates.length || dates.length > 7 || dates.some((k, i) =>
+      !/^\d{4}-\d\d-\d\d$/.test(k) || (i && k <= dates[i - 1]))) {
+    throw Error('Invalid ordered week of dates');
+  }
+  const properties = PropertiesService.getScriptProperties();
+  const bidirectional = properties.getProperty('BIDIR_ACTIVE') === 'true' &&
+    typeof bdProject_ === 'function';
+  const lock = bidirectional ? LockService.getScriptLock() : null;
+  if (lock && !lock.tryLock(1500)) throw Error('Synchronization in progress');
+  try {
+    const sheet = sheet_(cfg);
+    const days = bdReadDays_(sheet, dates);
+    const from = localDateFromKey_(dates[0]);
+    const to = localDateFromKey_(dates[dates.length - 1]);
+    to.setDate(to.getDate() + 1);
+    const events = calendar_(cfg).getEvents(from, to);
+    const allProperties = properties.getProperties();
+    const output = {};
+    for (const key of dates) {
+      try {
+        if (!days[key]) throw Error('Date missing from Sheet');
+        const dayStart = localDateFromKey_(key);
+        const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1);
+        const matching = events.filter(e => e.getStartTime() < dayEnd && e.getEndTime() > dayStart);
+        const busy = studioBusyForDay_({ date: key, from: 360, to: 1320 },
+          days[key].cells, matching, properties, bidirectional, allProperties);
+        output[key] = freeWindowsFromBusy_(busy);
+      } catch (_error) { output[key] = null; }
+    }
+    return output;
+  } finally { if (lock) lock.releaseLock(); }
+}
+
+function answerTelegram_(text, chatId) {
   // Telegram forwards retain their text; no LLM or external parsing API is needed.
   // All answers are read-only and are based on the current Sheet + live Calendar.
   if (/^\/(?:start|help)(?:@\w+)?(?:\s|$)/i.test(String(text || '')) ||
@@ -391,64 +522,244 @@ function answerTelegram_(text) {
       'Пришли или перешли сообщение с датой и интервалом, например:\n' +
       '«22 ноября с 15:30 до 17:00»\n' +
       '«Завтра с 18 до 19:30»\n' +
+      '«/free 22 ноября» — свободные окна\n' +
       'Я только проверяю занятость; бронирование не создаю.';
   }
   const cfg = config_();
+  if (/^\/status(?:\s|$)/i.test(String(text || ''))) {
+    if (!cfg.ownerChatId || String(chatId) !== String(cfg.ownerChatId)) {
+      return '🔒 Статус доступен только администратору.';
+    }
+    const props = PropertiesService.getScriptProperties();
+    const raw = props.getProperty('BD_LAST_SYNC');
+    const status = raw ? JSON.parse(raw) : null;
+    const failures = props.getProperty('TG_FAILED_COUNT') || '0';
+    return status
+      ? 'Последняя сверка: ' + status.at + '\nРежим: ' + status.mode +
+        '\nДней обновлено: ' + status.days + '\nКонфликтов: ' + status.conflicts +
+        '\nНедоставленных ответов Telegram: ' + failures
+      : 'Сверка ещё не запускалась.';
+  }
+  if (/^\/free(?:\s|$)/i.test(String(text || ''))) {
+    const request = String(text).replace(/^\/free\s*/i, '').trim();
+    const day = parseRussianSlot_(request + ' с 06:00 до 22:00', new Date());
+    if (day.error) return day.error;
+    const windows = freeWindows_(day.date, cfg);
+    return windows.length
+      ? '🟢 Свободные окна ' + day.date + ':\n' +
+        windows.map(([a, b]) => formatStudioTime_(a) + '–' + formatStudioTime_(b)).join('\n')
+      : '🔴 Свободных окон ' + day.date + ' нет.';
+  }
+  const clauses = String(text || '').split(/[;\n]+/).map(x => x.trim()).filter(Boolean);
+  if (clauses.length > 1) {
+    if (clauses.length > 5) return 'Можно проверить не больше пяти интервалов за раз.';
+    return clauses.map(x => answerTelegram_(x, chatId)).join('\n\n');
+  }
   const slot = parseRussianSlot_(text, new Date());
   if (slot.error) return slot.error;
   const answer = checkAvailability_(slot, cfg);
-  const time = n => String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0');
-  const period = slot.date + ' ' + time(slot.from) + '–' + time(slot.to);
+  const period = slot.date + ' ' + formatStudioTime_(slot.from) + '–' + formatStudioTime_(slot.to);
   if (answer.free) return '✅ По известному расписанию свободно: ' + period;
   return '❌ Занято: ' + period + '\nПересечения: ' +
-    answer.busy.map(x => time(x[0]) + '–' + time(x[1])).join(', ') +
+    answer.busy.map(x => formatStudioTime_(x[0]) + '–' + formatStudioTime_(x[1])).join(', ') +
     '\n(Без раскрытия имён и деталей занятий.)';
 }
 
 function telegramApi_(token, method, payload) {
   if (!token) throw Error('Set TELEGRAM_TOKEN in Script properties');
-  const response = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true,
-  });
-  const json = JSON.parse(response.getContentText());
+  let response;
+  try {
+    response = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+  } catch (_transportError) {
+    // Apps Script's UrlFetch exception embeds the COMPLETE URL (including the
+    // bot token). Never propagate or log its original message or stack.
+    throw Error('Telegram ' + method + ': network unavailable');
+  }
+  let json;
+  try { json = JSON.parse(response.getContentText()); }
+  catch (_parseError) {
+    throw Error('Telegram ' + method + ': invalid response (HTTP ' + response.getResponseCode() + ')');
+  }
   if (response.getResponseCode() !== 200 || !json.ok) {
-    throw Error('Telegram ' + method + ': ' + (json.description || response.getResponseCode()));
+    const detail = String(json.description || response.getResponseCode())
+      .replace(/\b\d{7,12}:[A-Za-z0-9_-]{20,}/g, '[REDACTED]');
+    throw Error('Telegram ' + method + ': ' + detail);
   }
   return json.result;
 }
 
-function sendTelegram_(token, chatId, text) {
-  return telegramApi_(token, 'sendMessage', { chat_id: chatId, text: text.slice(0, 3900) });
+function sendTelegram_(token, chatId, text, markup) {
+  const payload = { chat_id: chatId, text: text.slice(0, 3900) };
+  if (markup) payload.reply_markup = markup;
+  return telegramApi_(token, 'sendMessage', payload);
+}
+
+/** Keep failed replies for manual replay. Never silently drop an update after
+ * three transport failures; store the dead letter BEFORE deleting its outbox. */
+function tgDeadLetter_(cfg, props, key, entry) {
+  const deadKey = key.replace(/^TG_OUTBOX_/, 'TG_DEAD_');
+  props.setProperty(deadKey, JSON.stringify(Object.assign({}, entry, {
+    failedAt: new Date().toISOString(), reason: 'delivery_failed',
+  })));
+  props.setProperty('TG_FAILED_COUNT',
+    String(Number(props.getProperty('TG_FAILED_COUNT') || 0) + 1));
+  props.deleteProperty(key);
+  const now = Date.now();
+  if (!cfg.ownerChatId || now - Number(props.getProperty('TG_DELIVERY_ALERT_AT') || 0) < 6 * 3600000) return;
+  props.setProperty('TG_DELIVERY_ALERT_AT', String(now));
+  try {
+    sendTelegram_(cfg.telegramToken, cfg.ownerChatId,
+      '⚠️ Telegram не доставил ответ после трёх попыток. ' +
+      'Сообщение сохранено; проверь /status и функцию tgRetryFailedReplies в GAS.');
+  } catch (_error) { Logger.log('Telegram dead-letter owner alert unavailable'); }
+}
+
+/** Durable Telegram outbox. The update offset advances only AFTER its reply
+ * is persisted, so a failed chat does not stall every other user. */
+function tgDeliverOutbox_(cfg, props, onlyKey) {
+  const keys = onlyKey ? [onlyKey] : Object.keys(props.getProperties())
+    .filter(k => k.startsWith('TG_OUTBOX_')).sort().slice(0, 20);
+  for (const key of keys) {
+    const raw = props.getProperty(key);
+    if (!raw) continue;
+    let entry;
+    try { entry = JSON.parse(raw); }
+    catch (_error) {
+      // Preserve malformed evidence instead of deleting the only copy.
+      Logger.log(key + ': corrupt outbox entry requires operator review');
+      continue;
+    }
+    if (entry.nextAt && Date.now() < entry.nextAt) continue;
+    try {
+      if (entry.editMessageId) {
+        try {
+          telegramApi_(cfg.telegramToken, 'editMessageText', {
+            chat_id: entry.chatId, message_id: entry.editMessageId,
+            text: entry.reply.slice(0, 3900), reply_markup: entry.markup,
+          });
+        } catch (error) {
+          // Replaying a completed edit after a crash is a successful no-op.
+          if (/message is not modified/i.test(String(error.message))) {
+            // No change is necessary.
+          } else if (/message to edit not found|message can't be edited/i.test(String(error.message))) {
+            sendTelegram_(cfg.telegramToken, entry.chatId, entry.reply, entry.markup);
+          } else throw error;
+        }
+      } else sendTelegram_(cfg.telegramToken, entry.chatId, entry.reply, entry.markup);
+      props.deleteProperty(key);
+    } catch (error) {
+      entry.attempts = (entry.attempts || 0) + 1;
+      if (entry.attempts >= 3) {
+        tgDeadLetter_(cfg, props, key, entry);
+        Logger.log(key + ': response moved to dead-letter queue after three attempts');
+      } else {
+        entry.nextAt = Date.now() + Math.pow(2, entry.attempts - 1) * 60000;
+        props.setProperty(key, JSON.stringify(entry));
+      }
+    }
+  }
+}
+
+/** Operator-only GAS function: manually retry at most 20 preserved replies. */
+function tgRetryFailedReplies() {
+  const lock = LockService.getUserLock();
+  if (!lock.tryLock(1000)) return { skipped: true, reason: 'Telegram poll running' };
+  try {
+    const cfg = config_();
+    const props = PropertiesService.getScriptProperties();
+    const keys = Object.keys(props.getProperties()).filter(k => /^TG_DEAD_\d+$/.test(k)).sort().slice(0, 20);
+    const moved = [];
+    for (const key of keys) {
+      const id = key.slice('TG_DEAD_'.length);
+      const outbox = 'TG_OUTBOX_' + id;
+      if (props.getProperty(outbox)) continue;
+      const entry = JSON.parse(props.getProperty(key));
+      delete entry.failedAt;
+      delete entry.reason;
+      entry.attempts = 0;
+      entry.nextAt = 0;
+      props.setProperty(outbox, JSON.stringify(entry));
+      props.deleteProperty(key);
+      moved.push(outbox);
+    }
+    // Deliver the exact batch we requeued, even if older pending updates also
+    // occupy the first 20 sorted outbox slots.
+    moved.forEach(key => tgDeliverOutbox_(cfg, props, key));
+    return { retried: moved.length, remainingDeadLetters:
+      Object.keys(props.getProperties()).filter(k => /^TG_DEAD_\d+$/.test(k)).length };
+  } finally { lock.releaseLock(); }
 }
 
 /** Minute-triggered pull: no public web app and no Google credential exposed. */
 function pollTelegram() {
-  const lock = LockService.getScriptLock();
+  // Telegram's offset is separate from Sheet/Calendar state: it must not
+  // wait for a 120-day reconciliation under the global script lock.
+  const lock = LockService.getUserLock();
   if (!lock.tryLock(1000)) return; // global lock also prevents overlapping sync
   try {
     const cfg = config_();
     const props = PropertiesService.getScriptProperties();
+    tgDeliverOutbox_(cfg, props);
     const offset = Number(props.getProperty('TG_OFFSET') || 0);
     const updates = telegramApi_(cfg.telegramToken, 'getUpdates', {
-      offset, limit: 20, timeout: 0, allowed_updates: ['message'],
+      offset, limit: 20, timeout: 0, allowed_updates: ['message', 'callback_query'],
     });
     updates.forEach(update => {
       const message = update.message;
-      if (message && message.chat && (message.text || message.caption)) {
+      const callback = update.callback_query;
+      if ((message && message.chat && (message.text || message.caption)) ||
+          (callback && callback.message && callback.message.chat)) {
+        const chatId = message ? message.chat.id : callback.message.chat.id;
+        if (callback) {
+          // Acknowledge immediately; availability checks may take several seconds.
+          try { telegramApi_(cfg.telegramToken, 'answerCallbackQuery', { callback_query_id: callback.id }); }
+          catch (e) { Logger.log('Callback ack: ' + String(e.message)); }
+        }
         let reply;
-        try { reply = answerTelegram_(message.text || message.caption); }
+        let markup = null;
+        try {
+          const cache = CacheService.getScriptCache();
+          const rateKey = 'TG_RATE_' + String(chatId);
+          const requests = Number(cache.get(rateKey) || 0);
+          if (requests >= 10) {
+            reply = '⏳ Слишком много запросов. Подожди минуту и попробуй снова.';
+          } else {
+            cache.put(rateKey, String(requests + 1), 60);
+            const result = callback
+              ? typeof tgUxCallback_ === 'function'
+                ? tgUxCallback_(callback.data, chatId)
+                : { text: 'Меню обновляется. Попробуй позже.' }
+              : typeof tgUxMessage_ === 'function'
+                ? tgUxMessage_(message.text || message.caption, chatId)
+                : { text: answerTelegram_(message.text || message.caption, chatId) };
+            reply = result.text;
+            markup = result.reply_markup || null;
+          }
+        }
         catch (e) { Logger.log(String(e)); reply = '⚠️ Не удалось подтвердить свободное время. Попробуй позже.'; }
-        sendTelegram_(cfg.telegramToken, message.chat.id, reply);
+        const key = 'TG_OUTBOX_' + update.update_id;
+        props.setProperty(key, JSON.stringify({ chatId, reply, markup,
+          editMessageId: callback ? callback.message.message_id : null,
+          attempts: 0, nextAt: 0 }));
+        // Acknowledged updates have either a durable pending reply or no reply.
+        props.setProperty('TG_OFFSET', String(update.update_id + 1));
+        tgDeliverOutbox_(cfg, props, key);
+      } else {
+        props.setProperty('TG_OFFSET', String(update.update_id + 1));
       }
-      props.setProperty('TG_OFFSET', String(update.update_id + 1));
     });
   } finally { lock.releaseLock(); }
 }
 
 function installTriggers() {
+  if (PropertiesService.getScriptProperties().getProperty('BIDIR_ACTIVE') === 'true') {
+    throw Error('Legacy trigger installer disabled while bidirectional sync is active');
+  }
   config_();
   const names = new Set(['syncCalendarToSheet', 'pollTelegram']);
   ScriptApp.getProjectTriggers().forEach(t => {
