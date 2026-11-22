@@ -263,23 +263,34 @@ function bdApiEventDay_(item) {
 
 /** Pure delta projection; includes BOTH old and new day on a move/delete. */
 function bdApiChangePlan_(items, previous, today, full) {
-  const index = full ? {} : Object.assign({}, previous);
+  const end = localDateFromKey_(today);
+  end.setDate(end.getDate() + BD.days);
+  const endExclusive = dayKey_(end);
+  const withinHorizon = key => Boolean(key && key >= today && key < endExclusive);
+  // Keep the API-ID index bounded. Entries outside the 120-day Sheet horizon
+  // are reconciled by the full backup scan as they enter the horizon.
+  const index = {};
+  if (!full) {
+    for (const [id, key] of Object.entries(previous)) {
+      if (withinHorizon(key)) index[id] = key;
+    }
+  }
   const keys = new Set();
   for (const item of items) {
     if (!item.id) throw Error('Calendar API event without ID');
     const old = previous[item.id] || null;
     const next = item.status === 'cancelled' ? null : bdApiEventDay_(item);
-    if (old && old >= today) keys.add(old);
-    if (next && next >= today) keys.add(next);
-    if (next && next >= today) index[item.id] = next;
+    if (withinHorizon(old)) keys.add(old);
+    if (withinHorizon(next)) keys.add(next);
+    if (withinHorizon(next)) index[item.id] = next;
     else delete index[item.id];
     if ((item.recurrence || item.recurringEventId) &&
-        ((old && old >= today) || (next && next >= today))) {
+        (withinHorizon(old) || withinHorizon(next))) {
       throw Error('Recurring Calendar events require manual review');
     }
   }
   if (full) {
-    for (const old of Object.values(previous)) if (old >= today) keys.add(old);
+    for (const old of Object.values(previous)) if (withinHorizon(old)) keys.add(old);
   }
   return { keys: [...keys].sort(), index };
 }
@@ -483,6 +494,13 @@ function bdWriteCells_(sheet, rowNumber, previous, desired) {
   const row = sheet.getRange(rowNumber, 2, 1, 16);
   if (!bdEqual_(bdClean_(row.getDisplayValues()[0]), previous)) {
     throw Error('Row ' + rowNumber + ': concurrent Sheet modification');
+  }
+  const formulas = row.getFormulas()[0];
+  for (let i = 0; i < 16; i++) {
+    if (previous[i] !== desired[i] && formulas[i]) {
+      throw bdPreflightError_('Row ' + rowNumber + ': refusing to replace formula in ' +
+        colName_(i + 2) + rowNumber);
+    }
   }
   // Write only contiguous runs of changed cells: unchanged formula cells and
   // validation remain untouched. One flush per row, not one per cell.
