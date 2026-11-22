@@ -383,6 +383,51 @@ function parseRussianSlot_(text, now) {
 
 function overlaps_(a, b, c, d) { return a < d && b > c; }
 
+/** Shared fail-closed per-day calculation for single and batched checks. */
+function studioBusyForDay_(slot, row, calendarEvents, properties, bidirectional, allProperties) {
+  if (Object.keys(allProperties).some(x => x.startsWith('PENDING_')) ||
+      allProperties['BD_PENDING_' + slot.date] ||
+      (bidirectional && allProperties.BIDIR_PAUSED === 'true')) {
+    throw Error('Sync is pending or paused; availability cannot be confirmed');
+  }
+  const exactEvents = calendarEvents.filter(e => !e.isAllDayEvent() &&
+    dayKey_(e.getStartTime()) === slot.date &&
+    dayKey_(new Date(e.getEndTime().getTime() - 1)) === slot.date);
+  const metas = exactEvents.map(bdEventMeta_);
+  const projection = bidirectional ? bdProject_(metas, slot.date) : null;
+  if (projection && projection.conflicts.length) {
+    throw Error('Calendar contains unrepresentable or overlapping bookings');
+  }
+  if (bidirectional) {
+    const prior = bdState_(properties, slot.date);
+    const state = bdPlanDay_(slot.date, row, metas, prior);
+    if (!['none', 'adopt'].includes(state.kind) ||
+        calendarEvents.some(e => !e.isAllDayEvent() && !exactEvents.includes(e))) {
+      throw Error('Sheet and Calendar have not yet converged');
+    }
+  }
+  const ledger = bidirectional ? {} : ledger_(properties, slot.date);
+  const busy = [];
+  const start = localDateFromKey_(slot.date);
+  for (let h = STUDIO.firstHour; h < STUDIO.lastHour; h++) {
+    const value = String(row[h - STUDIO.firstHour] || '');
+    if (!value.trim()) continue;
+    if (projection && projection.cells[h - STUDIO.firstHour] === value.trim()) continue;
+    if (!bidirectional && ledger[String(h)] === value) continue;
+    const begin = h * 60 + (/^\s*\(\s*\+30\s*\)/.test(value) ? 30 : 0);
+    const endHour = (h + 1) * 60;
+    if (overlaps_(slot.from, slot.to, begin, endHour)) busy.push([begin, endHour]);
+  }
+  calendarEvents.forEach(e => {
+    const from = e.isAllDayEvent() ? 0 : Math.max(0,
+      Math.round((e.getStartTime().getTime() - start.getTime()) / 60000));
+    const to = e.isAllDayEvent() ? 1440 : Math.min(1440,
+      Math.round((e.getEndTime().getTime() - start.getTime()) / 60000));
+    if (overlaps_(slot.from, slot.to, from, to)) busy.push([Math.max(0, from), Math.min(1440, to)]);
+  });
+  return busy;
+}
+
 function checkAvailability_(slot, cfg) {
   const properties = PropertiesService.getScriptProperties();
   const bidirectional = properties.getProperty('BIDIR_ACTIVE') === 'true' &&
@@ -392,54 +437,15 @@ function checkAvailability_(slot, cfg) {
   if (lock && !lock.tryLock(1500)) throw Error('Synchronization in progress');
   try {
     const allProperties = properties.getProperties();
-    if (Object.keys(allProperties).some(x => x.startsWith('PENDING_')) ||
-        allProperties['BD_PENDING_' + slot.date] ||
-        (bidirectional && allProperties.BIDIR_PAUSED === 'true')) {
-      throw Error('Sync is pending or paused; availability cannot be confirmed');
-    }
     const sheet = sheet_(cfg);
     const rows = dateRows_(sheet, [slot.date]);
     if (!rows[slot.date]) throw Error('Date not present in booking sheet: ' + slot.date);
     const row = sheet.getRange(rows[slot.date], 2, 1, 16).getDisplayValues()[0];
-    const ledger = ledger_(properties, slot.date);
     const start = localDateFromKey_(slot.date);
     const end = new Date(start); end.setDate(end.getDate() + 1);
     const calendarEvents = calendar_(cfg).getEvents(start, end);
-    const exactEvents = calendarEvents.filter(e => !e.isAllDayEvent() &&
-      dayKey_(e.getStartTime()) === slot.date &&
-      dayKey_(new Date(e.getEndTime().getTime() - 1)) === slot.date);
-    const metas = exactEvents.map(bdEventMeta_);
-    const projection = bidirectional ? bdProject_(metas, slot.date) : null;
-    if (projection && projection.conflicts.length) {
-      throw Error('Calendar contains unrepresentable or overlapping bookings');
-    }
-    if (bidirectional) {
-      const prior = bdState_(properties, slot.date);
-      const state = bdPlanDay_(slot.date, row, metas, prior);
-      if (!['none', 'adopt'].includes(state.kind) ||
-          calendarEvents.some(e => !e.isAllDayEvent() && !exactEvents.includes(e))) {
-        throw Error('Sheet and Calendar have not yet converged');
-      }
-    }
-    const busy = [];
-    for (let h = STUDIO.firstHour; h < STUDIO.lastHour; h++) {
-      const value = String(row[h - STUDIO.firstHour] || '');
-      if (!value.trim()) continue;
-      // Projected Calendar cells use precise event ends; other Sheet bookings
-      // conservatively occupy the full portion shown by their hourly cell.
-      if (projection && projection.cells[h - STUDIO.firstHour] === value.trim()) continue;
-      if (!bidirectional && ledger[String(h)] === value) continue;
-      const begin = h * 60 + (/^\s*\(\s*\+30\s*\)/.test(value) ? 30 : 0);
-      const endHour = (h + 1) * 60;
-      if (overlaps_(slot.from, slot.to, begin, endHour)) busy.push([begin, endHour]);
-    }
-    calendarEvents.forEach(e => {
-      const from = e.isAllDayEvent() ? 0 : Math.max(0,
-        Math.round((e.getStartTime().getTime() - start.getTime()) / 60000));
-      const to = e.isAllDayEvent() ? 1440 : Math.min(1440,
-        Math.round((e.getEndTime().getTime() - start.getTime()) / 60000));
-      if (overlaps_(slot.from, slot.to, from, to)) busy.push([Math.max(0, from), Math.min(1440, to)]);
-    });
+    const busy = studioBusyForDay_(slot, row, calendarEvents, properties,
+      bidirectional, allProperties);
     return { free: busy.length === 0, busy };
   } finally { if (lock) lock.releaseLock(); }
 }
@@ -449,10 +455,9 @@ function formatStudioTime_(minutes) {
     String(minutes % 60).padStart(2, '0');
 }
 
-function freeWindows_(date, cfg) {
+function freeWindowsFromBusy_(busy) {
   const opening = STUDIO.firstHour * 60;
   const closing = STUDIO.lastHour * 60;
-  const busy = checkAvailability_({ date, from: opening, to: closing }, cfg).busy;
   const free = [];
   let started = null;
   for (let minute = opening; minute <= closing; minute += 30) {
@@ -465,6 +470,47 @@ function freeWindows_(date, cfg) {
     }
   }
   return free;
+}
+
+function freeWindows_(date, cfg) {
+  const busy = checkAvailability_({ date, from: STUDIO.firstHour * 60,
+    to: STUDIO.lastHour * 60 }, cfg).busy;
+  return freeWindowsFromBusy_(busy);
+}
+
+/** Weekly view: one Sheet scan and one Calendar query instead of seven of each. */
+function freeWindowsBatch_(dates, cfg) {
+  if (!dates.length || dates.length > 7 || dates.some((k, i) =>
+      !/^\d{4}-\d\d-\d\d$/.test(k) || (i && k <= dates[i - 1]))) {
+    throw Error('Invalid ordered week of dates');
+  }
+  const properties = PropertiesService.getScriptProperties();
+  const bidirectional = properties.getProperty('BIDIR_ACTIVE') === 'true' &&
+    typeof bdProject_ === 'function';
+  const lock = bidirectional ? LockService.getScriptLock() : null;
+  if (lock && !lock.tryLock(1500)) throw Error('Synchronization in progress');
+  try {
+    const sheet = sheet_(cfg);
+    const days = bdReadDays_(sheet, dates);
+    const from = localDateFromKey_(dates[0]);
+    const to = localDateFromKey_(dates[dates.length - 1]);
+    to.setDate(to.getDate() + 1);
+    const events = calendar_(cfg).getEvents(from, to);
+    const allProperties = properties.getProperties();
+    const output = {};
+    for (const key of dates) {
+      try {
+        if (!days[key]) throw Error('Date missing from Sheet');
+        const dayStart = localDateFromKey_(key);
+        const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1);
+        const matching = events.filter(e => e.getStartTime() < dayEnd && e.getEndTime() > dayStart);
+        const busy = studioBusyForDay_({ date: key, from: 360, to: 1320 },
+          days[key].cells, matching, properties, bidirectional, allProperties);
+        output[key] = freeWindowsFromBusy_(busy);
+      } catch (_error) { output[key] = null; }
+    }
+    return output;
+  } finally { if (lock) lock.releaseLock(); }
 }
 
 function answerTelegram_(text, chatId) {
