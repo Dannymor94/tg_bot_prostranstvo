@@ -102,3 +102,38 @@ test('410 triggers full read; incomplete pagination throws without token',()=>{
  assert.throws(()=>changes(()=>({code:200,body:{items:[]}}),'test',null));
  assert.throws(()=>changes(()=>({code:200,body:{items:[{id:'a'},{id:'a'}],nextSyncToken:'x'}}),'test',null));
 });
+
+test('manual title edit is quarantined instead of silently overwritten',()=>{
+ const f=fakeCal(),p=f.port;p.compareAndWrite('b1',null,b());
+ f.events.get(eventId('b1')).summary='Manual rename';
+ assert.throws(()=>p.read('b1'),/title changed/);
+ assert.throws(()=>p.compareAndWrite('b1',b(),b({from:900})),/title changed/);
+ assert.equal(f.events.get(eventId('b1')).summary,'Manual rename');
+});
+test('composed sheet, accepted, calendar and journal ports converge on create/move/cancel',()=>{
+ vm.runInContext(readFileSync(new URL('CrmJournal.gs',import.meta.url),'utf8'),ctx);
+ const s=fakeSheet('Аренды'),a=fakeSheet('_CRM_ACCEPTED'),t=tenants(),c=fakeCal();
+ // Persistent journal test fixture shares the same sheet mock as the booking adapter.
+ const j=fakeSheet('_CRM_ACCEPTED');
+ j.data[0]=plain(ctx.crmJournalHeaders_());
+ j.getName=()=> '_CRM_JOURNAL';j.getLastColumn=()=>5;
+ const sp=sheetPort(s,t,()=>{}),ap=acceptedPort(a,()=>{}),cp=c.port,jp=ctx.crmJournalForSheet_(j,()=>{});
+ const targets={sheet:sp,calendar:cp,accepted:ap};
+ const port={...jp,read:(target,id)=>targets[target].read(id),compareAndWrite:(target,id,before,desired)=>targets[target].compareAndWrite(id,before,desired),isAvailable:()=>true};
+ const initial=b(),moved=b({date:'2026-11-28',from:600,to:720}),cancelled={...moved,status:'cancelled'};
+ sp.compareAndWrite('b1',null,initial);
+ const plan=(id,base,sheet,calendar)=>ctx.crmSyncIntent_({id,base,sheet,calendar,calendarDeleted:!!base&&calendar===null&&base.status!=='cancelled'}).intent;
+ const op=plan('create',null,initial,null);
+ assert.equal(ctx.crmRunSync_(port,op).status,'done');
+ assert.equal(ap.revision('b1'),1);
+ c.port.compareAndWrite('b1',initial,moved);
+ s.data[1][7]=500;
+ assert.equal(ctx.crmRunSync_(port,plan('move',initial,initial,moved)).status,'done');
+ assert.equal(sp.read('b1').date,'2026-11-28');
+ assert.equal(s.data[1][7],500);
+ assert.equal(ap.revision('b1'),2);
+ sp.compareAndWrite('b1',moved,cancelled);
+ assert.equal(ctx.crmRunSync_(port,plan('cancel',moved,cancelled,moved)).status,'done');
+ assert.equal(cp.read('b1'),null);assert.equal(sp.read('b1').status,'cancelled');
+ assert.equal(s.data[1][7],500);assert.equal(ap.revision('b1'),3);
+});
