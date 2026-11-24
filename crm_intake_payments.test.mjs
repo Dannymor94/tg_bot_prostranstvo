@@ -117,3 +117,28 @@ test('claim never overwrites a changed or unresolved manual row',()=>{
  const actual=ctx.crmSheetRows_(s,'Аренды')[0];
  assert.equal(claim(s,actual,profiles,cfg(),'b1',()=>{}).kind,'review');assert.equal(s.writes,0);
 });
+
+vm.runInContext(readFileSync(new URL('CrmSettings.gs',import.meta.url),'utf8'),ctx);
+function settings(){
+ const data=[['Параметр','Значение','Описание','','Тип дня','Формат','Утро, ₽/ч','День, ₽/ч','Вечер, ₽/ч']];
+ const labels=['Версия тарифа','Действует с','Открытие','Конец утра','Конец дня','Закрытие','Скидка постоянным','Часовой пояс','Режим'];
+ const values=['2026-06-01','2026-06-01',6/24,10/24,17/24,23/24,.1,'Europe/Moscow','TEST'];
+ const table=[['Будни','Индивидуальное',500,500,1000],['Будни','Групповое',700,700,1000],['Выходные','Индивидуальное',500,700,1000],['Выходные','Групповое',900,900,1000]];
+ for(let i=0;i<labels.length;i++)data.push([labels[i],values[i],'','',...(table[i]||Array(5).fill(''))]);
+ return {data,formula:false,getName:()=> 'Настройки',getLastColumn:()=>9,getRange(){return {
+  getValues:()=>data,getDisplayValues:()=>data.map((r,i)=>r.map((v,j)=>j===1&&i>=3&&i<=6?['06:00','10:00','17:00','23:00'][i-3]:String(v))),
+  getFormulas:()=>data.map(r=>r.map(()=>this.formula?'=1':''))
+ };}};
+}
+test('native settings price update needs no code edit',()=>{
+ const s=settings(),read=ctx.crmReadSettings_;
+ assert.deepEqual(plain(read(s)),plain(cfg()));
+ s.data[2][8]=1200;
+ assert.equal(manual(input,profiles,read(s)).quote.totalKopecks,171000);
+});
+test('settings reject malformed prices, environment, formulas and discount precision',()=>{
+ const read=ctx.crmReadSettings_;
+ for(const change of [s=>s.data[2][8]='1200',s=>s.data[9][1]='PROD',s=>s.formula=true,s=>s.data[7][1]=.12345,s=>s.data[3][4]='wrong']){
+  const s=settings();change(s);assert.throws(()=>read(s));
+ }
+});
