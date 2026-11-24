@@ -98,6 +98,8 @@ function crmClaimManualRow_(sheet,expectedRow,profiles,cfg,id,flush){
   const v=current.values.slice(),b=planned.booking;
   v[3]=planned.tenantName;v[4]=b.direction;v[5]=b.format==="group"?"Групповое":"Индивидуальное";
   v[9]=b.status==="draft"?"Черновик":"Подтверждена";v[11]=id;v[16]=b.tenantId;
+  // Persist initial quote with the claim, before creating a Calendar projection.
+  if(b.status==="confirmed"){v[6]=planned.quote.totalKopecks/100;v[14]=planned.quote.tariffVersion;}
   for(const value of v)if(typeof value==="string")crmSheetSafeText_(value);
   const range=sheet.getRange(current.row,1,1,17);
   if(range.getFormulas()[0].some(Boolean)||JSON.stringify(range.getValues()[0])!==JSON.stringify(current.values))throw Error("Manual row changed before claim");
