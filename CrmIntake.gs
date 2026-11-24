@@ -74,3 +74,35 @@ function crmManualCalendarPlan_(event,profiles,cfg,id){
   const result=crmManualBooking_({id,...occupied,name,direction,format:null},profiles,cfg);
   return {...result,eventId:event.id,etag:event.etag};
 }
+
+// Claim an identified user-entered row only after re-reading the original content.
+// The caller allocates and durably records the ID, checks availability and holds the lock.
+function crmClaimManualRow_(sheet,expectedRow,profiles,cfg,id,flush){
+  crmId_(id);
+  if(typeof flush!=="function"||!Number.isInteger(expectedRow?.row)||expectedRow.row<2)throw Error("Invalid manual row claim");
+  const planned=crmManualSheetPlan_(expectedRow,profiles,cfg,id);
+  if(planned.kind!=="ready")return planned;
+  const rows=crmSheetRows_(sheet,"Аренды"),existing=rows.filter(r=>r.values[11]===id);
+  if(existing.length>1)throw Error("Duplicate booking identity");
+  if(existing.length===1){
+    const b=planned.booking,v=existing[0].values;
+    const p=profiles.find(x=>x.id===b.tenantId);
+    if(v[16]!==b.tenantId||crmNameKey_(v[3])!==crmNameKey_(p.name)||v[4]!==b.direction||
+      crmSheetFormat_(v[5])!==b.format||crmSheetStatus_(v[9])!==b.status||
+      crmSheetDate_(existing[0].display[0])!==b.date||crmSheetMinute_(existing[0].display[1])!==b.from||
+      crmSheetMinute_(existing[0].display[2])!==b.to)throw Error("Claim identity already used");
+    return {...planned,replayed:true};
+  }
+  const current=rows.find(r=>r.row===expectedRow.row);
+  if(!current||JSON.stringify(current.values)!==JSON.stringify(expectedRow.values)||JSON.stringify(current.display)!==JSON.stringify(expectedRow.display)||current.formulas.some(Boolean))throw Error("Manual row changed");
+  const v=current.values.slice(),b=planned.booking;
+  v[3]=planned.tenantName;v[4]=b.direction;v[5]=b.format==="group"?"Групповое":"Индивидуальное";
+  v[9]=b.status==="draft"?"Черновик":"Подтверждена";v[11]=id;v[16]=b.tenantId;
+  for(const value of v)if(typeof value==="string")crmSheetSafeText_(value);
+  const range=sheet.getRange(current.row,1,1,17);
+  if(range.getFormulas()[0].some(Boolean)||JSON.stringify(range.getValues()[0])!==JSON.stringify(current.values))throw Error("Manual row changed before claim");
+  range.setValues([v]);flush();
+  const verified=crmSheetRows_(sheet,"Аренды").filter(r=>r.values[11]===id);
+  if(verified.length!==1||JSON.stringify(verified[0].values)!==JSON.stringify(v))throw Error("Manual row claim not verified");
+  return {...planned,replayed:false};
+}
