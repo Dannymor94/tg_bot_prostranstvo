@@ -72,11 +72,12 @@ function crmSheetBookingRow_(r,tenants){
   const booking={id,date:crmSheetDate_(r.display[0]),from:crmSheetMinute_(r.display[1]),to:crmSheetMinute_(r.display[2]),tenantId,direction:crmSheetSafeText_(v[4]),format:crmSheetFormat_(v[5]),status:crmSheetStatus_(v[9])};
   return crmBookingSnapshot_(booking);
 }
-function crmSheetBookingPort_(sheet,tenantSheet,flush){
+function crmSheetBookingPort_(sheet,tenantSheet,flush,allowUnclaimed=false){
   if(typeof flush!=="function")throw Error("Missing flush");
   function inventory(){
     const tenants=crmSheetTenants_(tenantSheet),map=new Map();
     for(const r of crmSheetRows_(sheet,"Аренды")){
+      if(allowUnclaimed&&r.values[11]==="")continue;
       const booking=crmSheetBookingRow_(r,tenants);
       if(map.has(booking.id))throw Error("Duplicate booking ID");
       map.set(booking.id,{r,booking});
