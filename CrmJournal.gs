@@ -56,5 +56,6 @@ function crmJournalForSheet_(sheet,flush){
     flush();
     if(JSON.stringify(load(id))!==JSON.stringify(record))throw Error("Journal write not verified");
   }
-  return {load,hasPending,save};
+  function list(){return [...rows().values()].map(x=>x.record);}
+  return {load,hasPending,save,list};
 }
