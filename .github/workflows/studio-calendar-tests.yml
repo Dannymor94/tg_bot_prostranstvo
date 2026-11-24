@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   gas-tests:
-    name: Validate Apps Script and run 59 regression tests
+    name: Validate Apps Script and run regression tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -37,7 +37,8 @@ jobs:
       - name: Check GAS source syntax
         shell: bash
         run: |
-          for file in Code.gs Bidirectional.gs TelegramUX.gs; do
+          set -euo pipefail
+          for file in *.gs; do
             node --check --input-type=commonjs < "$file"
           done
       - name: Run deterministic regression tests
