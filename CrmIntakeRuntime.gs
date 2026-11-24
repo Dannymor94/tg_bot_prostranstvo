@@ -42,6 +42,7 @@ function crmRuntimeEventId_(id){
   return id.startsWith("ext_")?crmExternalBookingId_(id.slice(4)).slice(4):crmCalendarEventId_(id);
 }
 function crmAdoptCalendarEvent_(request,calendarId,event,profiles,cfg){
+  if(event.id.startsWith("crm2"))return {kind:"review",reason:"reserved_event_id"};
   const id=crmExternalBookingId_(event.id);
   if(event.description&&event.description.trim())return {kind:"review",reason:"existing_description"};
   const plan=crmManualCalendarPlan_(event,profiles,cfg,id);
