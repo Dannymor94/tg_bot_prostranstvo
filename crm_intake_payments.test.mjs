@@ -142,3 +142,58 @@ test('settings reject malformed prices, environment, formulas and discount preci
   const s=settings();change(s);assert.throws(()=>read(s));
  }
 });
+
+for(const f of ['CrmIntakeRuntime.gs','CrmFinanceProjection.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
+test('intake automatically claims row and snapshots its initial quote',()=>{
+ const s=fakeBookingSheet(),run=ctx.crmIntakeSheetPass_;
+ const r=run(s,profiles,cfg(),()=> 'b1',()=>{},()=>true,5);
+ assert.equal(r.claimed,1);assert.equal(s.data[1][6],1530);assert.equal(s.data[1][14],'2026-06-01');
+ assert.equal(run(s,profiles,cfg(),()=> 'b2',()=>{},()=>true,5).claimed,0);
+ assert.equal(s.writes,1);
+});
+test('unresolved complete sheet interval is occupied, unfinished row is not',()=>{
+ const s=fakeBookingSheet(),r=ctx.crmUnclaimedRows_(s);
+ assert.equal(ctx.crmUnclaimedOverlap_(booking,r),true);
+ assert.equal(ctx.crmUnclaimedOverlap_(booking,r,2),false);
+ s.data[1][2]='';assert.equal(ctx.crmUnclaimedOverlap_(booking,ctx.crmUnclaimedRows_(s)),false);
+});
+test('manual Calendar event adoption changes metadata only, preserves original ID and replays',()=>{
+ let current=event(),patches=0;
+ const request=(method,path,payload,headers)=>{
+  if(method==='GET')return {code:200,body:plain(current)};
+  assert.equal(method,'PATCH');assert.equal(headers['If-Match'],'e1');
+  assert.equal(payload.start,undefined);assert.equal(payload.end,undefined);assert.equal(payload.id,undefined);
+  current={...current,...plain(payload),etag:'e2'};patches++;return {code:200,body:plain(current)};
+ };
+ const r=ctx.crmAdoptCalendarEvent_(request,'test',event(),profiles,cfg());
+ assert.equal(r.booking.id,'ext_google1');assert.equal(ctx.crmRuntimeEventId_(r.booking.id),'google1');
+ assert.equal(current.start.dateTime,event().start.dateTime);assert.equal(current.id,'google1');
+ assert.equal(ctx.crmAdoptCalendarEvent_(request,'test',event(),profiles,cfg()).replayed,true);
+ assert.equal(patches,1);
+});
+test('adoption preserves notes and refuses changed etag',()=>{
+ const never=()=>{throw Error('unexpected write');};
+ assert.equal(ctx.crmAdoptCalendarEvent_(never,'test',event({description:'existing notes'}),profiles,cfg()).reason,'existing_description');
+ assert.throws(()=>ctx.crmAdoptCalendarEvent_(()=>({code:200,body:event({etag:'new'})}),'test',event(),profiles,cfg()),/changed/);
+});
+test('finance projection snapshots quote, reflects actual receipts, does not reprice after move',()=>{
+ const s=fakeBookingSheet();
+ ctx.crmIntakeSheetPass_(s,profiles,cfg(),()=> 'b1',()=>{},()=>true,5);
+ const r=ctx.crmSheetRows_(s,'Аренды')[0];
+ const out=ctx.crmFinancialRow_(r,booking,1,profiles,cfg(),[receipt()]);
+ assert.equal(out[6],1530);assert.equal(out[7],500.01);assert.equal(out[8],1029.99);assert.equal(out[13],1);
+ const newer=cfg();newer.rates.weekday.group[2]=200000;
+ const moved=ctx.crmFinancialRow_({values:out,formulas:r.formulas},{...booking,date:'2026-11-28'},2,profiles,newer,[receipt()]);
+ assert.equal(moved[6],1530);assert.equal(moved[7],500.01);assert.equal(moved[8],'');assert.equal(moved[15],'Проверить стоимость');
+ const cancelled=ctx.crmFinancialRow_({values:moved,formulas:r.formulas},{...booking,status:'cancelled'},3,profiles,newer,[receipt()]);
+ assert.equal(cancelled[7],500.01);assert.equal(cancelled[8],0);assert.equal(cancelled[15],'Отмена — проверить возврат');
+});
+test('calendar-origin accepted booking receives first quote, subsequent tariff changes do not reprice',()=>{
+ const r=row();r.values[11]='ext_google1';
+ const b={...booking,id:'ext_google1'};
+ const out=ctx.crmFinancialRow_(r,b,1,profiles,cfg(),[]);
+ assert.equal(out[6],1530);assert.equal(out[12],'google1');assert.equal(out[8],1530);
+ const changed=cfg();changed.rates.weekday.group[2]=200000;
+ const same=ctx.crmFinancialRow_({values:out,formulas:r.formulas},b,1,profiles,changed,[]);
+ assert.deepEqual(plain(same),plain(out));
+});
