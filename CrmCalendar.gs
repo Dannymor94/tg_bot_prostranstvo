@@ -53,7 +53,10 @@ function crmCalendarPort_(request,calendarId,tenantName,eventIdFor){
     if(r.code===404||r.code===410){verifiedCalendar();return {booking:null,event:null};}
     if(r.code!==200)throw Error("Calendar read failed: "+r.code);
     if(r.body?.id===eid&&r.body.status==="cancelled"){verifiedCalendar();return {booking:null,event:null};}
-    return {booking:crmCalendarSnapshot_(r.body,id,eid),event:r.body};
+    const booking=crmCalendarSnapshot_(r.body,id,eid);
+    const expectedSummary=crmCalendarBody_(booking,booking.tenantId===null?"":tenantName(booking.tenantId)).summary;
+    if(r.body.summary!==expectedSummary)throw Error("Calendar title changed; review required");
+    return {booking,event:r.body};
   }
   function read(id){return fetch(id).booking;}
   function compareAndWrite(id,before,desired){
