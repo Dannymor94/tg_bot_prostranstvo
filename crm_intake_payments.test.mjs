@@ -1,0 +1,93 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+const ctx=vm.createContext({});
+for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmSheets.gs','CrmCalendar.gs','CrmIntake.gs','CrmPayments.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
+const {crmManualBooking_:manual,crmManualSheetPlan_:sheetPlan,crmManualCalendarPlan_:calPlan,crmDefaultTariff_:cfg,crmPaymentPort_:payments,crmPaymentHeaders_:headers,crmRublesToKopecks_:kopecks}=ctx;
+const plain=x=>JSON.parse(JSON.stringify(x));
+const profiles=[{id:'t1',name:'Марина',direction:'Йога',format:'group',regular:true},{id:'t2',name:'Анна',direction:'Массаж',format:'individual',regular:false}];
+const input={id:'b1',date:'2026-11-27',from:960,to:1080,name:'Марина'};
+const event=(o={})=>({id:'google1',etag:'e1',summary:'Марина',status:'confirmed',start:{dateTime:'2026-11-27T13:00:00Z'},end:{dateTime:'2026-11-27T15:00:00Z'},...o});
+test('name-only booking fills defaults and regular discount',()=>{
+ const r=manual({...input,name:'  МАРИНА  '},profiles,cfg());
+ assert.equal(r.kind,'ready');assert.equal(r.booking.tenantId,'t1');assert.equal(r.booking.direction,'Йога');assert.equal(r.booking.format,'group');assert.equal(r.quote.totalKopecks,153000);
+});
+test('unknown or duplicate name does not guess tariff or tenant',()=>{
+ const r=manual({...input,name:'Новый'},profiles,cfg());
+ assert.equal(r.reason,'unknown_tenant');assert.deepEqual(plain(r.occupied),{date:input.date,from:960,to:1080});assert.equal(r.quote,undefined);
+ assert.equal(manual(input,[...profiles,{...profiles[0],id:'t3'}],cfg()).reason,'ambiguous_tenant');
+});
+test('explicit format and direction override profile, invalid interval rejected',()=>{
+ const r=manual({...input,format:'individual',direction:'Психология'},profiles,cfg());
+ assert.equal(r.quote.totalKopecks,135000);assert.equal(r.booking.direction,'Психология');
+ assert.throws(()=>manual({...input,to:900},profiles,cfg()));
+ assert.equal(manual({...input,from:300},profiles,cfg()).reason,'outside_tariff_or_invalid_quote');
+});
+function row(){
+ const values=Array(17).fill('');values.splice(0,4,46353,960/1440,1080/1440,'Марина');
+ const display=values.map(String);display.splice(0,3,'27.11.2026','16:00','18:00');
+ return {values,display,formulas:Array(17).fill('')};
+}
+test('new sheet row without ID or format can be planned',()=>{
+ const r=sheetPlan(row(),profiles,cfg(),'b1');
+ assert.equal(r.kind,'ready');assert.equal(r.booking.id,'b1');assert.equal(r.quote.totalKopecks,153000);
+});
+test('partial sheet entry stays incomplete; injected financial cells rejected',()=>{
+ const s=row();s.values[3]='';assert.equal(sheetPlan(s,profiles,cfg(),'b1').kind,'incomplete');
+ const t=row();t.values[7]=100;assert.throws(()=>sheetPlan(t,profiles,cfg(),'b1'));
+ const u=row();u.formulas[4]='=1';assert.throws(()=>sheetPlan(u,profiles,cfg(),'b1'));
+});
+test('calendar name or explicit direction, Moscow time, original identity retained',()=>{
+ const r=calPlan(event(),profiles,cfg(),'b1');
+ assert.equal(r.kind,'ready');assert.equal(r.booking.from,960);assert.equal(r.booking.to,1080);assert.equal(r.eventId,'google1');assert.equal(r.etag,'e1');
+ assert.equal(calPlan(event({summary:'Марина — Цигун'}),profiles,cfg(),'b1').booking.direction,'Цигун');
+});
+test('unsupported recurring/all-day calendar events are flagged, not imported',()=>{
+ assert.equal(calPlan(event({recurrence:['RRULE:FREQ=WEEKLY']}),profiles,cfg(),'b1').reason,'unsupported_calendar_event');
+ assert.equal(calPlan(event({start:{date:'2026-11-27'}}),profiles,cfg(),'b1').kind,'review');
+ assert.throws(()=>calPlan(event({extendedProperties:{private:{crmBookingId:'b1'}}}),profiles,cfg(),'b1'));
+});
+function fakeLedger(){
+ const data=[plain(headers())],state={data,writes:0,formula:false,capacity:1000};
+ state.getName=()=> 'Оплаты';state.getLastColumn=()=>8;state.getLastRow=()=>data.length;state.getMaxRows=()=>state.capacity;
+ state.getRange=(r,c,n,m)=>{
+  const values=()=>Array.from({length:n},(_,i)=>Array.from({length:m},(_,j)=>data[r-1+i]?.[c-1+j]??''));
+  return {getValues:values,getFormulas:()=>Array.from({length:n},()=>Array(m).fill(state.formula?'=1':'')),
+    getDisplayValues:()=>values().map((a,i)=>a.map((v,j)=>r+i>1&&c+j===1&&typeof v==='number'?new Date((v-25569)*86400000).toISOString().slice(0,10):String(v))),
+    setValues(rows){state.writes++;for(let i=0;i<n;i++){const a=data[r-1+i]??(data[r-1+i]=Array(8).fill(''));for(let j=0;j<m;j++)a[c-1+j]=rows[i][j];}}
+  };
+ };return state;
+}
+const booking=manual(input,profiles,cfg()).booking;
+const receipt=(o={})=>({id:'p1',bookingId:'b1',date:'2026-11-27',kind:'receipt',amountKopecks:50001,actor:'owner',...o});
+const meta={source:'telegram',tenantName:'Марина'};
+test('ledger append, reload and replay retain exact kopecks',()=>{
+ const s=fakeLedger(),p=payments(s,()=>{});
+ assert.equal(p.append(booking,153000,receipt(),meta).kind,'append');
+ assert.equal(s.data[1][4],500.01);
+ const restarted=payments(s,()=>{});
+ assert.equal(restarted.list()[0].amountKopecks,50001);
+ assert.equal(restarted.append(booking,153000,receipt(),meta).kind,'noop');
+ assert.equal(s.writes,1);
+ assert.throws(()=>restarted.append(booking,153000,receipt({amountKopecks:999}),meta));
+});
+test('ambiguous flush is recovered by payment ID, without double credit',()=>{
+ const s=fakeLedger(),p=payments(s,()=>{throw Error('lost response');});
+ assert.throws(()=>p.append(booking,153000,receipt(),meta));
+ assert.equal(payments(s,()=>{}).append(booking,153000,receipt(),meta).kind,'noop');assert.equal(s.writes,1);
+});
+test('refund persists separately and excess refund fails',()=>{
+ const s=fakeLedger(),p=payments(s,()=>{});
+ p.append(booking,153000,receipt(),meta);
+ const r=p.append(booking,153000,receipt({id:'p2',kind:'refund',amountKopecks:10001}),meta);
+ assert.equal(r.summary.paidKopecks,40000);assert.equal(p.list().length,2);
+ assert.throws(()=>p.append(booking,153000,receipt({id:'p3',kind:'refund',amountKopecks:40001}),meta));
+});
+test('ledger rejects corrupt data, formulas, fractional kopecks and unsafe text',()=>{
+ const s=fakeLedger(),p=payments(s,()=>{});
+ assert.throws(()=>p.append(booking,153000,receipt(),{...meta,tenantName:'=1'}));
+ assert.throws(()=>kopecks(0.001));assert.throws(()=>kopecks('500'));
+ s.formula=true;assert.throws(()=>p.list());s.formula=false;
+ p.append(booking,153000,receipt(),meta);s.data.push([...s.data[1]]);assert.throws(()=>p.list());
+});
