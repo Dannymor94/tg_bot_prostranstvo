@@ -91,3 +91,29 @@ test('ledger rejects corrupt data, formulas, fractional kopecks and unsafe text'
  s.formula=true;assert.throws(()=>p.list());s.formula=false;
  p.append(booking,153000,receipt(),meta);s.data.push([...s.data[1]]);assert.throws(()=>p.list());
 });
+
+function fakeBookingSheet(){
+ const initial=row(),data=[plain(ctx.crmSheetHeaders_()['Аренды']),plain(initial.values)],s={data,writes:0};
+ s.getName=()=> 'Аренды';s.getLastColumn=()=>17;s.getLastRow=()=>data.length;
+ s.getRange=(r,c,n,m)=>{
+  const values=()=>Array.from({length:n},(_,i)=>Array.from({length:m},(_,j)=>data[r-1+i]?.[c-1+j]??''));
+  return {getValues:values,getFormulas:()=>Array.from({length:n},()=>Array(m).fill('')),
+   getDisplayValues:()=>values().map((a,i)=>a.map((v,j)=>r+i===2&&c+j<=3?initial.display[c+j-1]:String(v))),
+   setValues(rows){s.writes++;for(let i=0;i<n;i++)for(let j=0;j<m;j++)data[r-1+i][c-1+j]=rows[i][j];}
+  };
+ };return s;
+}
+test('claim assigns stable ID, fills defaults, and replays after lost flush',()=>{
+ const s=fakeBookingSheet(),expected=ctx.crmSheetRows_(s,'Аренды')[0],claim=ctx.crmClaimManualRow_;
+ assert.throws(()=>claim(s,expected,profiles,cfg(),'b1',()=>{throw Error('lost response');}));
+ const r=claim(s,expected,profiles,cfg(),'b1',()=>{});
+ assert.equal(r.replayed,true);assert.equal(s.data[1][11],'b1');assert.equal(s.data[1][16],'t1');
+ assert.equal(s.data[1][5],'Групповое');assert.equal(s.writes,1);
+});
+test('claim never overwrites a changed or unresolved manual row',()=>{
+ const s=fakeBookingSheet(),expected=ctx.crmSheetRows_(s,'Аренды')[0],claim=ctx.crmClaimManualRow_;
+ s.data[1][4]='Изменено';assert.throws(()=>claim(s,expected,profiles,cfg(),'b1',()=>{}));
+ assert.equal(s.writes,0);s.data[1][3]='Новый';
+ const actual=ctx.crmSheetRows_(s,'Аренды')[0];
+ assert.equal(claim(s,actual,profiles,cfg(),'b1',()=>{}).kind,'review');assert.equal(s.writes,0);
+});
