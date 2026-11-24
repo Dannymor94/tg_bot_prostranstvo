@@ -22,7 +22,7 @@ function crmV2BoundTest_(){
   const tariff=crmReadSettings_(sheets["Настройки"]);
   const profiles=crmTenantProfiles_(sheets["Арендаторы"]);
   const flush=()=>SpreadsheetApp.flush();
-  const sheet=crmSheetBookingPort_(sheets["Аренды"],sheets["Арендаторы"],flush);
+  const sheet=crmSheetBookingPort_(sheets["Аренды"],sheets["Арендаторы"],flush,true);
   const accepted=crmAcceptedPort_(sheets["_CRM_ACCEPTED"],flush);
   const journal=crmJournalForSheet_(sheets["_CRM_JOURNAL"],flush);
   const payments=crmPaymentPort_(sheets["Оплаты"],flush);
@@ -30,14 +30,14 @@ function crmV2BoundTest_(){
     const p=crmTenantProfiles_(sheets["Арендаторы"]).find(x=>x.id===id);
     if(!p)throw Error("Unknown tenant");return p.name;
   };
-  const port=crmRuntimePort_(sheet,accepted,journal,crmGasCalendarRequest_,binding.calendarId,name,()=>Utilities.getUuid());
-  return {props,tariff,profiles,payments,port};
+  const port=crmRuntimePort_(sheet,accepted,journal,crmGasCalendarRequest_,binding.calendarId,name,()=>Utilities.getUuid(),()=>crmUnclaimedRows_(sheets["Аренды"]));
+  return {props,tariff,profiles,payments,port,sheets,accepted,journal,flush,calendarId:binding.calendarId};
 }
 function crmV2Preflight(){
   // Read-only: no changes, no trigger creation.
   const env=crmV2BoundTest_(),inventory=env.port.inventory(),records=env.port.list();
   const report={mode:"TEST",managed:inventory.ids.length,unmanaged:inventory.unmanaged.length,tenants:env.profiles.length,
-    payments:env.payments.list().length,pending:records.filter(r=>r.status==="pending").length,conflicts:records.filter(r=>r.status==="conflict").length,
+    unclaimed:crmUnclaimedRows_(env.sheets["Аренды"]).length,payments:env.payments.list().length,pending:records.filter(r=>r.status==="pending").length,conflicts:records.filter(r=>r.status==="conflict").length,
     writeEnabled:env.props.getProperty("CRM_V2_TEST_WRITE_ENABLED")==="true"};
   console.log(JSON.stringify(report));return report;
 }
@@ -47,11 +47,16 @@ function crmV2ReconcileTest(){
   try{
     const env=crmV2BoundTest_();
     if(env.props.getProperty("CRM_V2_TEST_WRITE_ENABLED")!=="true")throw Error("CRM v2 test writes disabled");
-    // Deliberately manual invocation until intake, financial projection and protections are ready.
+    // Deliberately manual invocation until live acceptance and strict protections.
+    const calendarIntake=crmIntakeCalendarPass_(crmGasCalendarRequest_,env.calendarId,env.profiles,env.tariff,5);
+    const sheetIntake=crmIntakeSheetPass_(env.sheets["Аренды"],env.profiles,env.tariff,()=>Utilities.getUuid(),env.flush,env.port.isAvailable,5);
     const report=crmRuntimePass_(env.port,10,env.props.getProperty("CRM_V2_SCAN_AFTER")||null);
+    report.intake={calendar:calendarIntake,sheet:sheetIntake};
+    report.finance=crmFinancialPass_(env.sheets["Аренды"],env.sheets["Арендаторы"],env.accepted,env.journal,env.profiles,env.tariff,env.payments.list(),env.flush,10);
+    report.ok=report.ok&&!calendarIntake.errors&&!calendarIntake.review&&!calendarIntake.limited&&!sheetIntake.errors&&!sheetIntake.review&&!sheetIntake.incomplete&&!sheetIntake.limited&&!report.finance.errors&&!report.finance.review&&!report.finance.limited;
     if(report.nextAfterId!==null)env.props.setProperty("CRM_V2_SCAN_AFTER",report.nextAfterId);
     env.props.setProperty("CRM_V2_LAST_REPORT",JSON.stringify({at:new Date().toISOString(),ok:report.ok,completed:report.completed,
-      pending:report.pending,unmanaged:report.unmanaged,conflicts:report.conflicts.length,errors:report.errors.length,limited:report.limited}));
+      pending:report.pending,unmanaged:report.unmanaged,conflicts:report.conflicts.length,errors:report.errors.length,limited:report.limited,intake:report.intake,finance:report.finance}));
     console.log(JSON.stringify({ok:report.ok,completed:report.completed,pending:report.pending,unmanaged:report.unmanaged,conflicts:report.conflicts.length,errors:report.errors.length}));
     return report;
   }finally{lock.releaseLock();}
