@@ -77,6 +77,7 @@ function crmCalendarPort_(request,calendarId,tenantName,eventIdFor){
         r=request("PATCH",events+"/"+encodeURIComponent(eid),body,{"If-Match":current.event.etag});
         if(r.code!==200)throw Error("Calendar patch failed: "+r.code);
       }else{
+        if(id.startsWith("ext_"))throw Error("Imported event missing; never recreate it");
         r=request("POST",events,{...body,id:eid},{});
         if(r.code!==200&&r.code!==201&&r.code!==409)throw Error("Calendar insert failed: "+r.code);
       }
