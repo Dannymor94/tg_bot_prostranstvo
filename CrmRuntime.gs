@@ -18,9 +18,10 @@ function crmRuntimeAvailable_(candidate,inventory,journal,calendarBusy){
   if(typeof busy!=="boolean")throw Error("Unknown Calendar occupancy");
   return !busy;
 }
-function crmRuntimePass_(port,limit){
+function crmRuntimePass_(port,limit,afterId=null){
+  if(afterId!==null)crmId_(afterId);
   if(!Number.isInteger(limit)||limit<1||limit>100)throw Error("Invalid reconciliation limit");
-  const report={completed:0,unchanged:0,conflicts:[],errors:[],pending:0,unmanaged:0,limited:false};
+  const report={completed:0,unchanged:0,conflicts:[],errors:[],pending:0,unmanaged:0,limited:false,nextAfterId:afterId};
   const initial=port.inventory(); // complete validated reads before any writes
   if(!initial||!Array.isArray(initial.ids)||!Array.isArray(initial.unmanaged))throw Error("Incomplete runtime inventory");
   report.unmanaged=initial.unmanaged.length;
@@ -48,10 +49,12 @@ function crmRuntimePass_(port,limit){
       else report.conflicts.push({id:r.intent.desired.id,reason:result.reason});
     }catch(e){report.errors.push({id:r.intent.desired.id,reason:"pending_retry_failed"});}
   }
-  for(const id of [...ids].sort()){
+  const ordered=[...ids].sort();
+  const rotated=afterId===null?ordered:[...ordered.filter(id=>id>afterId),...ordered.filter(id=>id<=afterId)];
+  for(const id of rotated){
     if(frozen.has(id))continue; // do not generate another operation in same pass after replay
     if(!budget){report.limited=true;break;}
-    budget--;
+    budget--;report.nextAfterId=id;
     try{
       const base=port.read("accepted",id),sheet=port.read("sheet",id),calendar=port.read("calendar",id);
       if(base===null&&sheet===null&&calendar===null)continue;
