@@ -124,3 +124,58 @@ function crmAdminExecute_(env,r,save,now,actor){
   }
   r={...r,status:"done"};save(r);return r;
 }
+
+function crmTgAdminTest_(update,key){
+  const lock=LockService.getScriptLock();
+  if(!lock.tryLock(5000))return {text:"Система занята. Повтори действие."};
+  try{
+    const env=crmV2BoundTest_(),props=env.props,owner=props.getProperty("OWNER_CHAT_ID"),
+      admins=(props.getProperty("CRM_V2_ADMIN_IDS")||"").split(",").map(x=>x.trim()).filter(x=>/^\d+$/.test(x));
+    if(crmTgRole_(update,owner,admins)==="guest")return {text:"Доступно только администратору."};
+    if(props.getProperty("CRM_V2_TEST_WRITE_ENABLED")!=="true"||props.getProperty("CRM_V2_TELEGRAM_WRITE_ENABLED")!=="true")
+      return {text:"Изменения через Telegram пока не включены."};
+    const cb=update.callback_query,actor=String((cb?cb.from:update.message.from).id),now=Date.now();
+    env.today=Utilities.formatDate(new Date(now),"Europe/Moscow","yyyy-MM-dd");
+    env.nowMinute=crmSheetMinute_(Utilities.formatDate(new Date(now),"Europe/Moscow","HH:mm"));
+    if(key==="v2|add")return {text:"/add Марина | ближайшая пятница с 16 до 18\n/move ID | завтра с 15 до 17\n/cancel ID\n/pay ID | полностью\n/pay ID | 500\nID показан в разделе Расписание. Все действия требуют подтверждения."};
+    const prefix="CRM_TG_CMD_";
+    const read=token=>JSON.parse(props.getProperty(prefix+token)||"null");
+    const save=r=>{const json=JSON.stringify(r);props.setProperty(prefix+r.token,json);if(props.getProperty(prefix+r.token)!==json)throw Error("Command not persisted");};
+    if(cb){
+      const m=/^v2\|(confirm|abort)\|(\d{1,16})$/.exec(key);
+      if(!m)return {text:"Кнопка устарела."};
+      let r=read(m[2]);
+      if(!r||r.actor!==actor||r.token!==m[2])return {text:"Подтверждение недоступно."};
+      if(m[1]==="abort"){
+        if(r.status!=="preview")return {text:"Запрос уже обработан или начат."};
+        save({...r,status:"aborted"});return {text:"Действие не выполнено."};
+      }
+      try{
+        r=crmAdminExecute_(env,r,save,now,actor);
+        // Accepted booking/payment is durable. Projection is a repairable view.
+        const finance=crmFinancialPass_(env.sheets["Аренды"],env.sheets["Арендаторы"],env.accepted,env.journal,env.profiles,env.tariff,env.payments.list(),env.flush,10);
+        return {text:"Действие выполнено."+(r.action==="move"?" Проверь согласованную стоимость в CRM.":"")+(finance.errors||finance.review||finance.limited?" Финансовая сводка требует сверки.":"")};
+      }catch(e){return {text:"Действие не подтверждено как завершенное. Проверь CRM или повтори эту же кнопку; не создавай новый запрос."};}
+    }
+    if(!Number.isSafeInteger(update.update_id)||update.update_id<0)return {text:"Запрос не идентифицирован."};
+    const token=String(update.update_id);
+    if(token.length>16)throw Error("Invalid Telegram operation token");
+    const old=read(token);
+    if(old){
+      if(old.actor!==actor)return {text:"Запрос недоступен."};
+      if(old.status==="preview"&&now<=old.expires)return crmAdminPreview_(old,env);
+      return {text:"Этот запрос уже обработан или устарел."};
+    }
+    // Bounded retention: never remove started operations, including ambiguous writes.
+    const all=props.getProperties(),keys=Object.keys(all).filter(k=>k.startsWith(prefix));
+    for(const k of keys){
+      const r=JSON.parse(all[k]);
+      if(r.status!=="started"&&Number.isFinite(r.expires)&&r.expires+7*86400000<now)props.deleteProperty(k);
+    }
+    if(Object.keys(props.getProperties()).filter(k=>k.startsWith(prefix)).length>=100)return {text:"Журнал команд заполнен. Нужна проверка владельца."};
+    let record;
+    try{record=crmAdminCommand_(key,env,env.today,now,actor,token);}catch(e){return {text:"Не удалось подготовить действие. Проверь имя, ID, время, цену или сумму оплаты."};}
+    if(!record)return {text:"Открой «Добавить аренду» для примеров команд."};
+    save(record);return crmAdminPreview_(record,env);
+  }finally{lock.releaseLock();}
+}
