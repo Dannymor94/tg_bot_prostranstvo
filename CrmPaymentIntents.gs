@@ -80,7 +80,9 @@ function crmPaymentIntentsPass_(env,request,today,idFor,limit){
       try{money=crmAdminMoney_(env,id,stable.revision);}catch(e){
         if(mark||calendarMark){report.review.push({id,reason:"payment_requires_stable_quote"});continue;}
       }
-      if(!crmSyncEqual_(cal.booking,stable.booking))throw Error("Calendar payment snapshot changed");
+      if(!crmSyncEqual_(cal.booking,stable.booking)){
+        report.review.push({id,reason:"calendar_title_metadata_requires_normalization"});continue;
+      }
       if(mark||calendarMark){
         if(!budget){report.limited=true;continue;}
         budget--;
