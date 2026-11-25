@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const ctx=vm.createContext({});
-for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmSheets.gs','CrmIntake.gs','CrmPayments.gs','CrmTenants.gs','CrmTelegramQuery.gs','CrmTelegramAdmin.gs','CrmTelegramNav.gs','CrmTelegram.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
+for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmSheets.gs','CrmIntake.gs','CrmPayments.gs','CrmTenants.gs','CrmTelegramQuery.gs','CrmTelegramAdmin.gs','CrmTelegramNav.gs','CrmTelegram.gs','CrmCalendar.gs','CrmIntakeRuntime.gs','CrmPaymentIntents.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const {crmAdminCommand_:command,crmAdminExecute_:execute,crmAdminPreview_:preview}=ctx;
 const today='2026-11-25',now=Date.parse('2026-11-25T07:00:00Z');
@@ -185,4 +185,60 @@ test('category dropdown schema accepts ordinary, regular and internal and writes
  }
  assert.equal(ctx.crmTenantProfiles_(sheet)[1].regular,true);
  assert.equal(ctx.crmTenantProfiles_(sheet)[2].internal,true);
+});
+
+function settlementFixture(line='Оплата: Отметить оплату',mark='Отметить оплату'){
+ const f=fixture(),id=f.seed(),b=f.states.accepted.get(id),row=f.rows[id];
+ row[10]=mark;f.env.calendarId='test';f.env.flush=()=>{};
+ const orig=f.env.sheets['Аренды'].getRange;
+ f.env.sheets['Аренды'].getRange=(r,c,n,m)=>c===11?{getValues:()=>[[row[10]]],getFormulas:()=>[['']],setValues(v){row[10]=v[0][0];}}:orig();
+ let event={...ctx.crmCalendarBody_(b,'Марина'),id:ctx.crmRuntimeEventId_(id),etag:'e1',status:'confirmed'};
+ if(line)event.description+='\n'+line;
+ let writes=0,failPatch=false;
+ const request=(method,path,body,headers)=>{
+  if(method==='GET')return {code:200,body:clone(event)};
+  assert.equal(method,'PATCH');assert.equal(headers['If-Match'],event.etag);
+  assert.deepEqual(Object.keys(body),['description']);
+  if(failPatch)return {code:412,body:{}};
+  event={...event,...clone(body),etag:'e'+(++writes+1)};return {code:200,body:clone(event)};
+ };
+ const run=()=>ctx.crmPaymentIntentsPass_(f.env,request,today,(id,revision)=>'settle_'+id+'_'+revision,10);
+ return {f,id,row,run,get event(){return event;},set failPatch(v){failPatch=v;}};
+}
+test('Sheet and Calendar full-payment instructions settle one outstanding amount',()=>{
+ const t=settlementFixture(),p=t.f.plan('/pay '+t.id+' | 500','600');t.f.run(p);
+ const r=t.run();assert.equal(r.receipts,1);assert.equal(r.cleared,1);
+ assert.equal(t.f.entries.length,2);assert.equal(t.f.entries[1].amountKopecks,103000);
+ assert.equal(t.row[10],'');assert.match(t.event.description,/Оплата: оплачено$/);
+ assert.equal(t.run().receipts,0);assert.equal(t.f.entries.length,2);
+});
+test('Calendar-only payment and lost response recover without duplicates',()=>{
+ const t=settlementFixture('Оплата: Отметить оплату','');t.f.env.fail='pay';
+ assert.equal(t.run().errors.length,1);assert.equal(t.f.entries.length,1);
+ t.f.env.fail=null;assert.equal(t.run().receipts,0);
+ assert.match(t.event.description,/Оплата: оплачено$/);assert.equal(t.f.entries.length,1);
+});
+test('failed Calendar acknowledgement preserves marker and never creates second receipt',()=>{
+ const t=settlementFixture();t.failPatch=true;
+ assert.equal(t.run().errors.length,1);assert.equal(t.f.entries.length,1);
+ t.failPatch=false;assert.equal(t.run().receipts,0);assert.equal(t.f.entries.length,1);
+ assert.match(t.event.description,/Оплата: оплачено$/);
+});
+test('stale quote prevents settlement, read-only status never creates receipts',()=>{
+ const t=settlementFixture();t.row[13]=2;
+ assert.equal(t.run().review.length,1);assert.equal(t.f.entries.length,0);
+ assert.equal(t.row[10],'Отметить оплату');
+ const s=settlementFixture('Оплата: оплачено','');
+ assert.equal(s.run().receipts,0);assert.match(s.event.description,/Оплата: не оплачено$/);
+});
+test('internal zero quote is not a fabricated payment',()=>{
+ const t=settlementFixture();t.row[6]=0;t.row[14]='internal:2026-06-01';
+ assert.equal(t.run().receipts,0);assert.equal(t.f.entries.length,0);
+ assert.equal(t.row[10],'');assert.match(t.event.description,/Оплата: без оплаты$/);
+});
+test('settlement cannot be repeated automatically after refund on same revision',()=>{
+ const t=settlementFixture();assert.equal(t.run().receipts,1);
+ t.f.entries.push({id:'refund1',bookingId:t.id,date:today,kind:'refund',amountKopecks:10000,actor:'owner'});
+ t.row[10]='Отметить оплату';assert.equal(t.run().errors.length,1);
+ assert.equal(t.f.entries.length,2);assert.equal(t.row[10],'Отметить оплату');
 });
