@@ -1,0 +1,9 @@
+# CRM v2 — explicit repair of journal conflicts (2026-11-25)
+
+- A persisted conflict remains frozen during normal reconciliation. crmRetryConflict_ can retry the original immutable intent only when the operator has corrected the conflicting projections (each must match the original expected or desired snapshot) and the desired slot passes current availability.
+- The journal adapter's explicit reopen method compares the exact existing conflict record and changes it to pending in one verified write. Normal save() still forbids reopening. Existing crmRunSync_ handles the retry, including a lost response after reopen. Completed operations are no-ops on retry.
+- TEST operator workflow: use crmV2ListConflictsTest to find the exact operation ID; repair the conflicting source data; set CRM_V2_RETRY_CONFLICT_OP to that ID in the isolated TEST project's Script Properties; manually invoke crmV2RetryConflictTest with the TEST write flag enabled. The shared lock is acquired. The retry property is cleared only after completion. No force-overwrite or delete mechanism.
+- This is an operator recovery path for already journaled conflicts, not an automatic conflict-resolution UI. A divergent edit detected before journal creation requires manual alignment of the sources; no journal retry exists for that case. The previous conflict reason is cleared on reopening, and the immutable original intent remains in the journal; a permanent record of each retry attempt is not yet implemented.
+- Tests cover explicit reopen, stale conflict rejection, overlap, divergent projection, repaired retry and completed replay. Code/test commit 5e1b91e1f9d64aa5d9a79c340fc57b0d1c90c316; CI evidence tracked in PR #2.
+
+No actual GAS execution, conflict repair in real data, production edits or trigger activation. Next release gates: strict field protection, backup/restore, deployment package, migration rehearsal, live E2E. No additional business features required for the first release.
