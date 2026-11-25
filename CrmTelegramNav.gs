@@ -7,11 +7,11 @@ function crmTgUiStep_(key,isCallback,env,session,token,now){
     return {state,reply:reply(text,choices.map((x,i)=>[{text:x.label.slice(0,100),callback_data:"v2|ui|"+token+"|"+i}]))};
   };
   const prompt=(text,kind,data={})=>output(text,[],{kind,...data});
-  const tenantLabel=p=>p.name+" — "+p.direction+(p.regular?" (−10%*)":"");
+  const tenantLabel=p=>p.name+" — "+p.direction+(p.regular?" (постоянный)":"");
   const profile=id=>{const p=env.profiles.find(x=>x.id===id);if(!p)throw Error("Арендатор изменился.");return p;};
   const tenants=(page,mode)=>{
     const all=env.profiles.slice().sort((a,b)=>a.name.localeCompare(b.name)||a.id.localeCompare(b.id)),offset=page*8;
-    const choices=all.slice(offset,offset+8).map(p=>({label:tenantLabel(p).replace(" (−10%*)"," (постоянный)"),action:{kind:"tenant",id:p.id,mode}}));
+    const choices=all.slice(offset,offset+8).map(p=>({label:tenantLabel(p),action:{kind:"tenant",id:p.id,mode}}));
     if(page>0)choices.push({label:"Назад",action:{kind:"tenants",page:page-1,mode}});
     if(offset+8<all.length)choices.push({label:"Дальше",action:{kind:"tenants",page:page+1,mode}});
     choices.push({label:"Новый арендатор",action:{kind:"newTenant"}});
