@@ -12,7 +12,7 @@ function crmTenantAppend_(sheet,p,flush){
     if(JSON.stringify(same)!==JSON.stringify(p))throw Error("Tenant ID conflict");
     return {replayed:true};
   }
-  if(inventory.some(x=>crmNameKey_(x.name)===crmNameKey_(p.name)))throw Error("Tenant name already exists");
+  if(inventory.some(x=>crmNameKey_(x.name)===crmNameKey_(p.name))||crmSheetRows_(sheet,"Арендаторы").some(r=>r.values[7]===""&&typeof r.values[0]==="string"&&crmNameKey_(r.values[0])===crmNameKey_(p.name)))throw Error("Tenant name already exists");
   const row=sheet.getLastRow()+1;
   if(row>sheet.getMaxRows())throw Error("Tenant sheet capacity exhausted");
   const range=sheet.getRange(row,1,1,8);
