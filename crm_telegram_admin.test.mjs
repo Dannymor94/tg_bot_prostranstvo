@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const ctx=vm.createContext({});
-for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmSheets.gs','CrmIntake.gs','CrmPayments.gs','CrmTenants.gs','CrmTelegramQuery.gs','CrmTelegramAdmin.gs','CrmQuoteReview.gs','CrmTelegramNav.gs','CrmTelegram.gs','CrmCalendar.gs','CrmIntakeRuntime.gs','CrmPaymentIntents.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
+for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmSheets.gs','CrmIntake.gs','CrmPayments.gs','CrmTenants.gs','CrmTelegramQuery.gs','CrmTelegramAdmin.gs','CrmQuoteReview.gs','CrmTelegramNav.gs','CrmTelegram.gs','CrmCalendar.gs','CrmIntakeRuntime.gs','CrmPaymentIntents.gs','CrmFinanceProjection.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const {crmAdminCommand_:command,crmAdminExecute_:execute,crmAdminPreview_:preview}=ctx;
 const today='2026-11-25',now=Date.parse('2026-11-25T07:00:00Z');
@@ -241,4 +241,46 @@ test('settlement cannot be repeated automatically after refund on same revision'
  t.f.entries.push({id:'refund1',bookingId:t.id,date:today,kind:'refund',amountKopecks:10000,actor:'owner'});
  t.row[10]='Отметить оплату';assert.equal(t.run().errors.length,1);
  assert.equal(t.f.entries.length,2);assert.equal(t.row[10],'Отметить оплату');
+});
+
+function reviewFixture(){
+ const f=fixture(),id=f.seed();f.run(f.plan('/pay '+id+' | 500','701'));
+ f.run(f.plan('/move '+id+' | суббота с 12 до 14','702'));
+ f.env.flush=()=>{};
+ const sheet=f.env.sheets['Аренды'],orig=sheet.getRange;
+ sheet.getRange=(r,c,n,m)=>r===2&&c===1&&n===1&&m===17?{
+  getValues:()=>[clone(f.rows[id])],getFormulas:()=>[Array(17).fill('')],
+  setValues(v){f.rows[id]=clone(v[0]);}
+ }:orig();
+ return {f,id};
+}
+test('quote review keep preserves price and receipts, rebinds accepted revision',()=>{
+ const {f,id}=reviewFixture(),r=f.plan('/quote '+id+' | keep','703');
+ assert.equal(r.quote,153000);assert.equal(r.paid,50000);assert.equal(f.rows[id][13],1);
+ assert.match(preview(r,f.env).text,/Остаток: 1030 ₽/);
+ assert.equal(f.run(r).status,'done');assert.equal(f.rows[id][13],2);
+ assert.equal(f.rows[id][6],1530);assert.equal(f.rows[id][8],1030);assert.equal(f.entries.length,1);
+ assert.equal(f.run(f.record).status,'done');
+ assert.throws(()=>f.plan('/quote '+id+' | keep','704'));
+});
+test('quote recalculation updates amount but not receipts, replay after ambiguous flush',()=>{
+ const {f,id}=reviewFixture(),r=f.plan('/quote '+id+' | recalculate','703');
+ assert.equal(r.quote,162000);
+ f.env.flush=()=>{throw Error('lost response');};
+ assert.throws(()=>f.run(r));assert.equal(f.record.status,'started');
+ assert.equal(f.rows[id][6],1620);f.env.flush=()=>{};
+ assert.equal(f.run(f.record).status,'done');assert.equal(f.rows[id][8],1120);
+ assert.equal(f.entries.length,1);
+});
+test('quote review rejects changed tariff, payment marker and changed billing category keep',()=>{
+ const {f,id}=reviewFixture(),r=f.plan('/quote '+id+' | recalculate','703');
+ f.env.tariff.rates.weekend.group[1]=100000;assert.throws(()=>f.run(r));
+ f.rows[id][10]='Отметить оплату';assert.throws(()=>f.plan('/quote '+id+' | keep','704'));
+ f.rows[id][10]='';f.env.hasCalendarPaymentIntent=()=>true;
+ assert.throws(()=>f.plan('/quote '+id+' | keep','705'));
+ f.env.hasCalendarPaymentIntent=()=>false;f.env.profiles[0].regular=false;f.env.profiles[0].internal=true;
+ assert.throws(()=>f.plan('/quote '+id+' | keep','706'));
+ const free=f.plan('/quote '+id+' | recalculate','707');
+ assert.equal(free.quote,0);f.run(free);assert.equal(f.rows[id][15],'Внутренняя — проверить платеж');
+ assert.equal(f.entries.length,1);
 });
