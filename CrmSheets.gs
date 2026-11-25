@@ -14,7 +14,8 @@ function crmSheetRows_(sheet,title){
   const n=sheet.getLastRow();
   if(n<1||n>20001)throw Error("Sheet capacity invalid");
   const range=sheet.getRange(1,1,n,h.length),raw=range.getValues(),display=range.getDisplayValues(),formulas=range.getFormulas();
-  if(JSON.stringify(raw[0])!==JSON.stringify(h)||formulas[0].some(Boolean))throw Error("Sheet header mismatch: "+title);
+  const header=raw[0].slice();if(title==="Арендаторы"&&header[3]==="Категория")header[3]="Постоянный";
+  if(JSON.stringify(header)!==JSON.stringify(h)||formulas[0].some(Boolean))throw Error("Sheet header mismatch: "+title);
   return raw.slice(1).map((values,i)=>({row:i+2,values,display:display[i+1],formulas:formulas[i+1]})).filter(r=>r.values.some(x=>x!==""&&x!==null));
 }
 function crmSheetDate_(display){
