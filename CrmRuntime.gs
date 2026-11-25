@@ -59,13 +59,16 @@ function crmRuntimePass_(port,limit,afterId=null){
       const base=port.read("accepted",id),sheet=port.read("sheet",id),calendar=port.read("calendar",id);
       if(base===null&&sheet===null&&calendar===null)continue;
       if(base!==null&&crmSyncEqual_(base,sheet)&&crmSyncEqual_(base.status==="cancelled"?null:base,calendar)){
+        if(base.status!=="cancelled"&&port.normalizeCalendar)port.normalizeCalendar(id,base);
         report.unchanged++;continue;
       }
       const planned=crmSyncIntent_({id:port.newId(),base,sheet,calendar,calendarDeleted:base!==null&&base.status!=="cancelled"&&calendar===null});
       if(planned.kind==="conflict"){report.conflicts.push({id,reason:planned.fields.join(",")});continue;}
       const result=crmRunSync_(port,planned.intent);
-      if(result.status==="done")report.completed++;
-      else report.conflicts.push({id,reason:result.reason});
+      if(result.status==="done"){
+        report.completed++;
+        if(result.intent.desired.status!=="cancelled"&&port.normalizeCalendar)port.normalizeCalendar(id,result.intent.desired);
+      }else report.conflicts.push({id,reason:result.reason});
     }catch(e){report.errors.push({id,reason:"reconciliation_failed"});}
   }
   report.pending=port.list().filter(r=>r.status==="pending").length;
@@ -99,7 +102,7 @@ function crmCalendarBusy_(request,calendarId,candidate,ownEventId){
   }
   throw Error("Availability page limit exceeded");
 }
-function crmRuntimePort_(sheet,accepted,journal,request,calendarId,tenantName,newId,unclaimedRows=()=>[]){
+function crmRuntimePort_(sheet,accepted,journal,request,calendarId,tenantName,newId,unclaimedRows=()=>[],resolveTitle){
   if(typeof newId!=="function")throw Error("Missing operation ID allocator");
   function discovery(){
     const result=crmCalendarChanges_(request,calendarId,null),map=new Map(),unmanaged=[];
@@ -115,7 +118,7 @@ function crmRuntimePort_(sheet,accepted,journal,request,calendarId,tenantName,ne
     }
     return {map,unmanaged};
   }
-  const cal=crmCalendarPort_(request,calendarId,tenantName,crmRuntimeEventId_);
+  const cal=crmCalendarPort_(request,calendarId,tenantName,crmRuntimeEventId_,resolveTitle);
   const targets={sheet,accepted,calendar:cal};
   const inventory=()=>{
     const d=discovery(),ids=[...new Set([...sheet.list().map(b=>b.id),...accepted.list().map(b=>b.id),...d.map.keys()])];
@@ -123,6 +126,7 @@ function crmRuntimePort_(sheet,accepted,journal,request,calendarId,tenantName,ne
   };
   const isAvailable=(b,ignoreRow=null)=>!crmUnclaimedOverlap_(b,unclaimedRows(),ignoreRow)&&crmRuntimeAvailable_(b,[...sheet.list(),...accepted.list()],journal.list(),x=>crmCalendarBusy_(request,calendarId,x,crmRuntimeEventId_(x.id)));
   return {...journal,newId,inventory,isAvailable,
+    normalizeCalendar(id,b){return cal.normalize(id,b);},
     read(target,id){if(!targets[target])throw Error("Unknown target");return targets[target].read(id);},
     compareAndWrite(target,id,before,desired,initialQuote=null){
       if(!targets[target])throw Error("Unknown target");
