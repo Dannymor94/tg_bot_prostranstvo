@@ -20,6 +20,7 @@ function crmAdminMoney_(env,id,revision){
 }
 function crmAdminCommand_(text,env,today,now,actor,token){
   const tenant=crmTenantCommand_(text,env,today,now,actor,token);if(tenant)return tenant;
+  const review=crmQuoteReviewCommand_(text,env,today,now,actor,token);if(review)return review;
   const m=/^\/(add|move|cancel|pay)(?:@\w+)?\s+(.+)$/i.exec(text);
   if(!m)return null;
   const action=m[1].toLowerCase(),parts=m[2].split("|").map(x=>x.trim());
@@ -61,16 +62,18 @@ function crmAdminCommand_(text,env,today,now,actor,token){
 function crmAdminPreview_(r,env){
   if(r.action==="tenant"){const p=r.tenant;return {text:["Добавить арендатора",p.name,p.direction,p.format==="group"?"Групповое":"Индивидуальное",crmTenantCategoryLabel_(p)].join("\n"),reply_markup:{inline_keyboard:[[{text:"Подтвердить",callback_data:"v2|confirm|"+r.token},{text:"Не выполнять",callback_data:"v2|abort|"+r.token}]]}};}
   const b=r.desired||r.before,name=env.profiles.find(p=>p.id===b.tenantId)?.name||"Уточнить";
-  const label={add:"Создать аренду",move:"Перенести аренду",cancel:"Отменить аренду",pay:"Отметить поступление"}[r.action];
+  const label={quote:"Подтвердить стоимость",add:"Создать аренду",move:"Перенести аренду",cancel:"Отменить аренду",pay:"Отметить поступление"}[r.action];
   const lines=[label,name+" — "+b.direction,b.date+" "+crmTgTime_(b.from)+"–"+crmTgTime_(b.to)+" (МСК)"];
   if(r.action==="add")lines.push(r.tariffVersion.startsWith("internal:")?"Внутренняя аренда — без оплаты":"Стоимость: "+crmTgPrice_(r.quote));
   if(r.action==="move")lines.push("Новый расчет: "+crmTgPrice_(r.quote)+". Старая согласованная цена сохраняется до проверки в CRM.");
   if(r.action==="cancel")lines.push("История платежей сохранится; возврат отдельно.");
   if(r.action==="pay")lines.push("Поступление: "+crmTgPrice_(r.payment.amountKopecks));
+  if(r.action==="quote")lines.push("Прежняя цена: "+(r.old.quote===null?"не задана":crmTgPrice_(r.old.quote)),"Решение: "+(r.choice==="keep"?"сохранить цену":"пересчитать"),"Новая стоимость: "+crmTgPrice_(r.quote),"Получено: "+crmTgPrice_(r.paid),"Остаток: "+crmTgPrice_(Math.max(0,r.quote-r.paid)),...(r.paid>r.quote?["Переплата: "+crmTgPrice_(r.paid-r.quote)+". Возврат отдельно."]:[]));
   return {text:lines.join("\n"),reply_markup:{inline_keyboard:[[{text:"Подтвердить",callback_data:"v2|confirm|"+r.token},{text:"Не выполнять",callback_data:"v2|abort|"+r.token}]]}};
 }
 function crmAdminExecute_(env,r,save,now,actor){
   if(r.action==="tenant")return crmTenantExecute_(env,r,save,now,actor);
+  if(r.action==="quote")return crmQuoteReviewExecute_(env,r,save,now,actor);
   if(r.actor!==actor)throw Error("Подтверждение принадлежит другому пользователю.");
   if(r.status==="done")return r;
   if(r.status==="aborted"||r.status==="preview"&&now>r.expires)throw Error("Подтверждение устарело.");
