@@ -100,6 +100,7 @@ function crmPlanPayment_(booking,quotedKopecks,entries,intent) {
     if(JSON.stringify(crmPaymentEntry_(existing))!==JSON.stringify(p)) throw Error("Payment ID reused with different intent");
     return {kind:"noop",summary:before};
   }
+  if(p.kind==="receipt"&&quotedKopecks===0) throw Error("Non-billable booking cannot receive payment");
   if(p.kind==="receipt"&&booking.status!=="confirmed") throw Error("Receipt requires confirmed booking");
   if(p.kind==="refund"&&p.amountKopecks>before.paidKopecks) throw Error("Refund exceeds receipts");
   return {kind:"append",entry:p,summary:crmPaymentSummary_(booking.id,quotedKopecks,[...entries,p])};
