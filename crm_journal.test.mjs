@@ -70,3 +70,16 @@ test('ambiguous flush can be safely reread and retried',()=>{
   const retry=journal(s,()=>{});assert.equal(retry.load('op1').status,'pending');
   retry.save({intent:op,status:'pending'});assert.equal(s.writes.length,1);
 });
+
+test('explicit reopen checks exact prior conflict and regular save cannot reopen',()=>{
+ const s=fake(),j=journal(s,()=>{}),op=intent();
+ j.save({intent:op,status:'pending'});
+ const conflict={intent:op,status:'conflict',reason:'overlap'};j.save(conflict);
+ assert.throws(()=>j.save({intent:op,status:'pending'}));
+ assert.throws(()=>j.reopen({...conflict,reason:'changed_calendar'}));
+ assert.equal(j.reopen(conflict).status,'pending');
+ assert.equal(j.load('op1').status,'pending');
+ assert.throws(()=>j.reopen(conflict));
+ j.save({intent:op,status:'done'});
+ assert.equal(j.load('op1').status,'done');
+});
