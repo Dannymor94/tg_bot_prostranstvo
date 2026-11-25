@@ -60,6 +60,7 @@ function crmV2BackupTest(){
       const verified=crmBackupVerify_(folder,latest.manifestId,binding);
       return {ok:true,date,reused:true,events:verified.events.length};
     }
+    SpreadsheetApp.flush();
     const before=crmCalendarChanges_(crmGasCalendarRequest_,binding.calendarId,null);
     const state=crmBackupState_(props.getProperties());
     const payload={schema:1,date,spreadsheetId:binding.spreadsheetId,calendarId:binding.calendarId,timeZone:"Europe/Moscow",events:before.items,state};
@@ -68,7 +69,6 @@ function crmV2BackupTest(){
     if(source.isTrashed())throw Error("Source trashed");
     const sourceModified=source.getLastUpdated().getTime();
     const tag="CRM-v2-TEST-"+date+"-"+Utilities.getUuid();
-    SpreadsheetApp.flush();
     const copy=source.makeCopy(tag+"-sheet",folder);crmBackupPrivate_(copy);
     if(copy.getId()===source.getId())throw Error("Backup must be distinct");
     const workbook=SpreadsheetApp.openById(copy.getId()),original=SpreadsheetApp.openById(source.getId());
@@ -77,9 +77,9 @@ function crmV2BackupTest(){
     const after=crmCalendarChanges_(crmGasCalendarRequest_,binding.calendarId,null);
     const canonical=items=>JSON.stringify(items.map(x=>[x.id,x.etag||null,x.status||null]).sort((a,b)=>a[0].localeCompare(b[0])));
     if(source.getLastUpdated().getTime()!==sourceModified||canonical(before.items)!==canonical(after.items)||JSON.stringify(crmBackupState_(props.getProperties()))!==JSON.stringify(state))throw Error("Source changed during backup; retry");
-    const bundle=folder.createFile(tag+"-calendar.json",json,"application/json");crmBackupPrivate_(bundle);
+    const bundle=folder.createFile(Utilities.newBlob(json,"application/json",tag+"-calendar.json"));crmBackupPrivate_(bundle);
     const manifest={schema:1,date,spreadsheetId:binding.spreadsheetId,calendarId:binding.calendarId,folderId,copyId:copy.getId(),bundleId:bundle.getId(),sha256:sha,events:before.items.length,shape:shape(workbook)};
-    const file=folder.createFile(tag+"-manifest.json",JSON.stringify(manifest),"application/json");crmBackupPrivate_(file);
+    const file=folder.createFile(Utilities.newBlob(JSON.stringify(manifest),"application/json",tag+"-manifest.json"));crmBackupPrivate_(file);
     crmBackupVerify_(folder,file.getId(),binding);
     props.setProperty("CRM_V2_LAST_BACKUP",JSON.stringify({...manifest,manifestId:file.getId(),at:new Date().toISOString()}));
     return {ok:true,date,reused:false,events:before.items.length};
