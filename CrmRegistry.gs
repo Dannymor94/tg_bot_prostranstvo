@@ -34,6 +34,12 @@ function crmMergeBooking_(base, sheet, calendar) {
   if(base.id!==sheet.id||base.id!==calendar.id) throw Error("Booking identity mismatch");
   const keys=crmBookingFields_(), merged=crmBookingSnapshot_(base), conflicts=[];
   const sc=keys.filter(k=>sheet[k]!==base[k]), cc=keys.filter(k=>calendar[k]!==base[k]);
+  // Date and both endpoints form one logical interval; do not invent a hybrid.
+  const interval=["date","from","to"];
+  if(sc.some(k=>interval.includes(k))&&cc.some(k=>interval.includes(k))&&interval.some(k=>sheet[k]!==calendar[k])){
+    const sameField=interval.filter(k=>sc.includes(k)&&cc.includes(k)&&sheet[k]!==calendar[k]);
+    conflicts.push(...(sameField.length?sameField:["interval"]));
+  }
   for(const k of keys) {
     if(sc.includes(k)&&cc.includes(k)&&sheet[k]!==calendar[k]) conflicts.push(k);
     else if(sc.includes(k)) merged[k]=sheet[k];
