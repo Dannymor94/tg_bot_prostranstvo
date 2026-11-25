@@ -8,7 +8,7 @@ function crmAdminReadStable_(env,id){
 function crmAdminQuote_(env,b){
   const p=env.profiles.find(x=>x.id===b.tenantId);
   if(!p)throw Error("Арендатор не найден.");
-  return crmQuote_({...b,regular:p.regular},env.tariff);
+  return crmQuote_({...b,regular:p.regular,internal:p.internal},env.tariff);
 }
 function crmAdminMoney_(env,id,revision){
   const rows=crmSheetRows_(env.sheets["Аренды"],"Аренды").filter(r=>r.values[11]===id);
@@ -59,11 +59,11 @@ function crmAdminCommand_(text,env,today,now,actor,token){
   return record;
 }
 function crmAdminPreview_(r,env){
-  if(r.action==="tenant"){const p=r.tenant;return {text:["Добавить арендатора",p.name,p.direction,p.format==="group"?"Групповое":"Индивидуальное",p.regular?"Постоянный":"Обычный тариф"].join("\n"),reply_markup:{inline_keyboard:[[{text:"Подтвердить",callback_data:"v2|confirm|"+r.token},{text:"Не выполнять",callback_data:"v2|abort|"+r.token}]]}};}
+  if(r.action==="tenant"){const p=r.tenant;return {text:["Добавить арендатора",p.name,p.direction,p.format==="group"?"Групповое":"Индивидуальное",crmTenantCategoryLabel_(p)].join("\n"),reply_markup:{inline_keyboard:[[{text:"Подтвердить",callback_data:"v2|confirm|"+r.token},{text:"Не выполнять",callback_data:"v2|abort|"+r.token}]]}};}
   const b=r.desired||r.before,name=env.profiles.find(p=>p.id===b.tenantId)?.name||"Уточнить";
   const label={add:"Создать аренду",move:"Перенести аренду",cancel:"Отменить аренду",pay:"Отметить поступление"}[r.action];
   const lines=[label,name+" — "+b.direction,b.date+" "+crmTgTime_(b.from)+"–"+crmTgTime_(b.to)+" (МСК)"];
-  if(r.action==="add")lines.push("Стоимость: "+crmTgPrice_(r.quote));
+  if(r.action==="add")lines.push(r.tariffVersion.startsWith("internal:")?"Внутренняя аренда — без оплаты":"Стоимость: "+crmTgPrice_(r.quote));
   if(r.action==="move")lines.push("Новый расчет: "+crmTgPrice_(r.quote)+". Старая согласованная цена сохраняется до проверки в CRM.");
   if(r.action==="cancel")lines.push("История платежей сохранится; возврат отдельно.");
   if(r.action==="pay")lines.push("Поступление: "+crmTgPrice_(r.payment.amountKopecks));
