@@ -31,6 +31,7 @@ function crmValidateTariff_(cfg) {
 function crmQuote_(request,cfg) {
   crmValidateTariff_(cfg);
   if(!request||!["individual","group"].includes(request.format)||typeof request.regular!=="boolean") throw Error("Missing format or regular flag");
+  if(request.internal!==undefined&&typeof request.internal!=="boolean"||request.internal===true&&request.regular)throw Error("Invalid billing category");
   const date=crmCivilDate_(request.date);
   if(request.date<cfg.effectiveFrom) throw Error("Tariff not effective on requested date");
   const [open,morningEnd,dayEnd,close]=cfg.boundaries;
@@ -45,6 +46,7 @@ function crmQuote_(request,cfg) {
   // Integer arithmetic; positive amounts rounded once, half up, to kopecks.
   const baseKopecks=Math.floor((numerator+30)/60);
   const totalKopecks=Math.floor((numerator*(10000-discountBps)+300000)/600000);
+  if(request.internal===true)return {tariffVersion:"internal:"+cfg.version,dayType,format:request.format,from,to,minutes:to-from,discountBps:0,segments,baseKopecks,totalKopecks:0,nonBillable:true};
   return {tariffVersion:cfg.version,dayType,format:request.format,from,to,minutes:to-from,discountBps,segments,baseKopecks,totalKopecks};
 }
 
