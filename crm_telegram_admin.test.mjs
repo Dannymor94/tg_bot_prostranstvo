@@ -146,3 +146,16 @@ test('guest cannot access navigation callback or tenant command',()=>{
  assert.match(ctx.crmTgDispatch_(u,env).text,/только администратору/);
  }
 });
+
+test('tenant creation cannot duplicate an unclaimed manual name',()=>{
+ const sheet=tenantSheet([['Анна','Йога','Групповое',false,'','','','']]);
+ assert.throws(()=>ctx.crmTenantAppend_(sheet,{id:'other',name:'анна',direction:'Йога',format:'group',regular:false},()=>{}));
+ assert.equal(sheet.writes,0);
+});
+test('retry of free-text preview can route by durable update ID after navigation is cleared',()=>{
+ let routed=null;
+ const env={owner:'42',admins:[],uiEnabled:true,adminText:(id,updateId)=>id===42&&updateId===123,adminCommand:(_u,key)=>{routed=key;return {text:'preview'};}};
+ const u={update_id:123,message:{from:{id:42},chat:{id:42,type:'private'},text:'пятница с 16 до 18'}};
+ assert.equal(ctx.crmTgDispatch_(u,env).text,'preview');
+ assert.equal(routed,u.message.text);
+});
