@@ -27,13 +27,22 @@ function crmCalendarBody_(b,tenantName){
     visibility:"private",transparency:"opaque",
     extendedProperties:{private:{crmBookingId:b.id}}};
 }
+function crmCalendarPaymentLine_(description){
+  if(typeof description!=="string"||!description.startsWith("CRM v2\n"))throw Error("Unrecognized Calendar description");
+  const lines=description.split("\n");
+  if(lines.length<2||lines.length>3)throw Error("Unexpected Calendar description lines");
+  const fields=JSON.parse(lines[1]);
+  const payment=lines.length===3?lines[2]:null;
+  if(payment!==null&&!["Оплата: не оплачено","Оплата: частично","Оплата: оплачено","Оплата: без оплаты","Оплата: проверить стоимость","Оплата: Отметить оплату"].includes(payment))throw Error("Unknown Calendar payment instruction");
+  return {fields,payment,base:lines.slice(0,2).join("\n")};
+}
 function crmCalendarSnapshot_(event,id,expectedEventId){
   crmId_(id);
   if(!event||event.id!==expectedEventId||event.extendedProperties?.private?.crmBookingId!==id||event.recurringEventId||event.recurrence?.length||event.attendees?.length||event.eventType&&event.eventType!=="default")throw Error("Unmanaged or unsupported Calendar event");
   if(event.status!=="confirmed"&&event.status!=="tentative")throw Error("Unsupported Calendar status");
   if(typeof event.etag!=="string"||!event.etag)throw Error("Missing Calendar ETag");
   if(typeof event.description!=="string"||!event.description.startsWith("CRM v2\n"))throw Error("Unrecognized Calendar description");
-  const fields=JSON.parse(event.description.slice(7));
+  const {fields}=crmCalendarPaymentLine_(event.description);
   const start=crmCalendarLocal_(event.start?.dateTime),end=crmCalendarLocal_(event.end?.dateTime);
   if(start.date!==end.date)throw Error("Multi-day booking requires review");
   const booking=crmBookingSnapshot_({id,date:start.date,from:start.minute,to:end.minute,tenantId:fields.tenantId,direction:fields.direction,format:fields.format,status:fields.status});
@@ -65,6 +74,8 @@ function crmCalendarPort_(request,calendarId,tenantName,eventIdFor){
     const current=fetch(id),eid=eventId(id);
     if(!crmSyncEqual_(current.booking,before))throw Error("Calendar compare mismatch");
     if(crmSyncEqual_(current.booking,desired))return;
+    const payment=current.event?crmCalendarPaymentLine_(current.event.description).payment:null;
+    if(payment==="Оплата: Отметить оплату")throw Error("Resolve payment instruction before changing Calendar booking");
     let r;
     if(desired===null){
       r=request("DELETE",events+"/"+encodeURIComponent(eid),null,{"If-Match":current.event.etag});
@@ -74,6 +85,7 @@ function crmCalendarPort_(request,calendarId,tenantName,eventIdFor){
       if(current.event){
         // Preserve unrelated event metadata/private properties; ETag blocks newer UI edits.
         body.extendedProperties.private={...current.event.extendedProperties.private,crmBookingId:id};
+        if(payment)body.description+="\n"+payment;
         r=request("PATCH",events+"/"+encodeURIComponent(eid),body,{"If-Match":current.event.etag});
         if(r.code!==200)throw Error("Calendar patch failed: "+r.code);
       }else{
