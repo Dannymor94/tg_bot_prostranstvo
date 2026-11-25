@@ -33,7 +33,7 @@ function crmTgDispatch_(update,env){
     if(!admin)return {text:"Доступно только администратору."};
     return env.adminCommand(update,key);
   }
-  if(admin&&env.uiEnabled&&env.adminCommand&&(["v2|schedule","v2|payments","v2|tenants"].includes(key)||(!cb&&!key.startsWith("/")&&env.adminText?.(msg.from.id))))return env.adminCommand(update,key);
+  if(admin&&env.uiEnabled&&env.adminCommand&&(["v2|schedule","v2|payments","v2|tenants","v2|free","v2|rates"].includes(key)||(!cb&&!key.startsWith("/")&&env.adminText?.(msg.from.id))))return env.adminCommand(update,key);
   if(key==="v2|free")return {text:"Напиши день и период. Например: «ближайший вторник вечером» или «завтра утром на 2 часа»."};
   if(key==="v2|rates"){
     const c=crmValidateTariff_(env.cfg),lines=["Тарифы, ₽/час (утро / день / вечер)"];
