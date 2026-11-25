@@ -33,7 +33,7 @@ function crmTgDispatch_(update,env){
     if(!admin)return {text:"Доступно только администратору."};
     return env.adminCommand(update,key);
   }
-  if(admin&&env.uiEnabled&&env.adminCommand&&(["v2|schedule","v2|payments","v2|tenants","v2|free","v2|rates"].includes(key)||(!cb&&!key.startsWith("/")&&env.adminText?.(msg.from.id))))return env.adminCommand(update,key);
+  if(admin&&env.uiEnabled&&env.adminCommand&&(["v2|schedule","v2|payments","v2|tenants","v2|free","v2|rates"].includes(key)||(!cb&&!key.startsWith("/")&&env.adminText?.(msg.from.id,update.update_id))))return env.adminCommand(update,key);
   if(key==="v2|free")return {text:"Напиши день и период. Например: «ближайший вторник вечером» или «завтра утром на 2 часа»."};
   if(key==="v2|rates"){
     const c=crmValidateTariff_(env.cfg),lines=["Тарифы, ₽/час (утро / день / вечер)"];
@@ -72,6 +72,8 @@ function crmTgTestDispatch_(update){
   return crmTgDispatch_(update,{owner:props.getProperty("OWNER_CHAT_ID"),admins,cfg:env.tariff,today,nowMinute:crmSheetMinute_(clock),nowMs:Date.now(),
     status:()=>props.getProperty("CRM_V2_LAST_REPORT"),readBusy,adminRead:key=>crmTgAdminRead_(key,env,today),
     uiEnabled:props.getProperty("CRM_V2_TEST_WRITE_ENABLED")==="true"&&props.getProperty("CRM_V2_TELEGRAM_WRITE_ENABLED")==="true",
-    adminText:id=>{const s=JSON.parse(props.getProperty("CRM_TG_UI_"+id)||"null");return !!s?.kind&&s.expires>=Date.now();},
+    adminText:(id,updateId)=>{const s=JSON.parse(props.getProperty("CRM_TG_UI_"+id)||"null");
+      const old=Number.isSafeInteger(updateId)?JSON.parse(props.getProperty("CRM_TG_CMD_"+updateId)||"null"):null;
+      return old?.actor===String(id)||!!s?.kind&&s.expires>=Date.now();},
     adminCommand:(u,key)=>crmTgAdminTest_(u,key)});
 }
