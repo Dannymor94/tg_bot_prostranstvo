@@ -7,7 +7,7 @@ function crmFinancialRow_(row,booking,revision,profiles,cfg,entries){
   if(quote===""&&version===""&&quotedRevision===""&&booking.status==="confirmed"&&revision===1){
     const p=profiles.find(x=>x.id===booking.tenantId);
     if(!p)throw Error("Missing quote tenant");
-    const q=crmQuote_({...booking,regular:p.regular},cfg);
+    const q=crmQuote_({...booking,regular:p.regular,internal:p.internal},cfg);
     quote=q.totalKopecks/100;version=q.tariffVersion;quotedRevision=revision;
   }else if(quote!==""&&version!==""&&quotedRevision===""&&revision===1){
     quotedRevision=1; // initial manual Sheet claim already persisted its quote
@@ -20,9 +20,12 @@ function crmFinancialRow_(row,booking,revision,profiles,cfg,entries){
   const k=quote===""?0:quote===0?0:crmRublesToKopecks_(quote);
   const payment=crmPaymentSummary_(booking.id,k,entries);
   const hasQuote=!missing;
+  const internal=hasQuote&&version.startsWith("internal:");
+  if(internal&&k!==0)throw Error("Internal booking has nonzero quote");
   if(booking.status==="cancelled")state=payment.paidKopecks?"Отмена — проверить возврат":"Отменена";
   else if(booking.status==="draft")state="Черновик";
   else if(!hasQuote||quotedRevision!==revision)state="Проверить стоимость";
+  else if(internal)state=payment.paidKopecks?"Внутренняя — проверить платеж":"Без оплаты (внутренняя)";
   // No receivable invented when quote missing; cancelled booking retains actual receipts.
   const balance=booking.status==="cancelled"?0:booking.status==="confirmed"&&hasQuote&&quotedRevision===revision?payment.balanceKopecks/100:"";
   const next=v.slice();
@@ -40,7 +43,7 @@ function crmFinancialPass_(sheet,tenantSheet,accepted,journal,profiles,cfg,entri
       const b=crmSheetBookingRow_(r,tenants),base=accepted.read(b.id);
       if(!base||!crmSyncEqual_(base,b)||journal.hasPending(b.id)){report.review++;continue;}
       const next=crmFinancialRow_(r,b,accepted.revision(b.id),profiles,cfg,entries);
-      if(next[15]!=="Синхронизировано"&&next[15]!=="Отменена"&&next[15]!=="Черновик")report.review++;
+      if(next[15]!=="Синхронизировано"&&next[15]!=="Отменена"&&next[15]!=="Черновик"&&next[15]!=="Без оплаты (внутренняя)")report.review++;
       if(JSON.stringify(next)===JSON.stringify(r.values))continue;
       if(report.updated>=limit){report.limited=true;break;}
       const target=sheet.getRange(r.row,1,1,17);
