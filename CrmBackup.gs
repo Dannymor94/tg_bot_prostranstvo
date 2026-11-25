@@ -40,6 +40,13 @@ function crmBackupPayload_(snapshot){
 function crmBackupDigest_(text){
   return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,text,Utilities.Charset.UTF_8).map(x=>((x+256)%256).toString(16).padStart(2,"0")).join("");
 }
+function crmBackupWorkbookDigest_(book){
+  const data=book.getSheets().map(sheet=>{
+    const range=sheet.getDataRange(),values=range.getValues(),formulas=range.getFormulas();
+    return [sheet.getName(),values.map((row,i)=>row.map((v,j)=>formulas[i][j]?["formula",formulas[i][j]]:["value",v]))];
+  });
+  return crmBackupDigest_(JSON.stringify(data));
+}
 function crmBackupPrivate_(item){
   // Restrict generated backups to My Drive, owner-only. Refuse shared folders.
   if(item.getSharingAccess()!==DriveApp.Access.PRIVATE||item.getEditors().length||item.getViewers().length||!item.getOwner())throw Error("Backup target is not owner-only");
@@ -68,17 +75,19 @@ function crmV2BackupTest(){
     const source=DriveApp.getFileById(binding.spreadsheetId);
     if(source.isTrashed())throw Error("Source trashed");
     const sourceModified=source.getLastUpdated().getTime();
+    const sourceBook=SpreadsheetApp.openById(source.getId()),workbookHash=crmBackupWorkbookDigest_(sourceBook);
     const tag="CRM-v2-TEST-"+date+"-"+Utilities.getUuid();
     const copy=source.makeCopy(tag+"-sheet",folder);crmBackupPrivate_(copy);
     if(copy.getId()===source.getId())throw Error("Backup must be distinct");
     const workbook=SpreadsheetApp.openById(copy.getId()),original=SpreadsheetApp.openById(source.getId());
     const shape=b=>JSON.stringify(b.getSheets().map(s=>[s.getName(),s.getMaxRows(),s.getMaxColumns()]));
+    if(crmBackupWorkbookDigest_(workbook)!==workbookHash||crmBackupWorkbookDigest_(original)!==workbookHash)throw Error("Backup workbook content mismatch");
     if(shape(workbook)!==shape(original))throw Error("Backup workbook structure mismatch");
     const after=crmCalendarChanges_(crmGasCalendarRequest_,binding.calendarId,null);
     const canonical=items=>JSON.stringify(items.map(x=>[x.id,x.etag||null,x.status||null]).sort((a,b)=>a[0].localeCompare(b[0])));
     if(source.getLastUpdated().getTime()!==sourceModified||canonical(before.items)!==canonical(after.items)||JSON.stringify(crmBackupState_(props.getProperties()))!==JSON.stringify(state))throw Error("Source changed during backup; retry");
     const bundle=folder.createFile(Utilities.newBlob(json,"application/json",tag+"-calendar.json"));crmBackupPrivate_(bundle);
-    const manifest={schema:1,date,spreadsheetId:binding.spreadsheetId,calendarId:binding.calendarId,folderId,copyId:copy.getId(),bundleId:bundle.getId(),sha256:sha,events:before.items.length,shape:shape(workbook)};
+    const manifest={schema:1,date,spreadsheetId:binding.spreadsheetId,calendarId:binding.calendarId,folderId,copyId:copy.getId(),bundleId:bundle.getId(),sha256:sha,events:before.items.length,shape:shape(workbook),workbookHash};
     const file=folder.createFile(Utilities.newBlob(JSON.stringify(manifest),"application/json",tag+"-manifest.json"));crmBackupPrivate_(file);
     crmBackupVerify_(folder,file.getId(),binding);
     props.setProperty("CRM_V2_LAST_BACKUP",JSON.stringify({...manifest,manifestId:file.getId(),at:new Date().toISOString()}));
@@ -102,6 +111,7 @@ function crmBackupVerify_(folder,manifestId,binding){
   if(payload.spreadsheetId!==m.spreadsheetId||payload.calendarId!==m.calendarId||payload.date!==m.date||payload.events.length!==m.events)throw Error("Backup payload mismatch");
   const copy=read(m.copyId),book=SpreadsheetApp.openById(copy.getId());
   if(JSON.stringify(book.getSheets().map(s=>[s.getName(),s.getMaxRows(),s.getMaxColumns()]))!==m.shape)throw Error("Backup structure mismatch");
+  if(crmBackupWorkbookDigest_(book)!==m.workbookHash)throw Error("Backup workbook checksum mismatch");
   return {manifest:m,events:payload.events,state:payload.state};
 }
 function crmV2VerifyBackupTest(){
@@ -129,6 +139,7 @@ function crmV2RestoreWorkbookTest(){
     if([binding.spreadsheetId,backup.manifest.copyId].includes(file.getId()))throw Error("Restore not isolated");
     const restored=SpreadsheetApp.openById(file.getId());
     if(JSON.stringify(restored.getSheets().map(s=>[s.getName(),s.getMaxRows(),s.getMaxColumns()]))!==backup.manifest.shape)throw Error("Restore shape mismatch");
+    if(crmBackupWorkbookDigest_(restored)!==backup.manifest.workbookHash)throw Error("Restore checksum mismatch");
     const journal=crmJournalForSheet_(restored.getSheetByName("_CRM_JOURNAL"),()=>{throw Error("Read-only restore");});
     const accepted=crmAcceptedPort_(restored.getSheetByName("_CRM_ACCEPTED"),()=>{throw Error("Read-only restore");});
     const payments=crmPaymentPort_(restored.getSheetByName("Оплаты"),()=>{throw Error("Read-only restore");});
