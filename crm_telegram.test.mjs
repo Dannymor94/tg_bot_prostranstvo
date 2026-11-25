@@ -49,7 +49,8 @@ test('day occupancy combines freeBusy, accepted/CRM intervals, pending and unres
  const pending=b({id:'b2',from:720,to:780});
  const intent=ctx.crmSyncIntent_({id:'op',base:null,sheet:pending,calendar:null,calendarDeleted:false}).intent;
  const row={values:['date',1,2],display:['25.11.2026','15:00','16:00'],formulas:['','','']};
- assert.deepEqual(plain(dayBusy(request,'test',today,[b()],[{intent,status:'pending'}],[row])),[[480,540],[600,660],[720,780],[900,960]]);
+ const occupied=dayBusy(request,'test',today,[b()],[{intent,status:'pending'}],[row]);
+ assert.deepEqual(plain(free(cfg,today,occupied)),[[360,480],[540,600],[660,720],[780,900],[960,1380]]);
  assert.throws(()=>dayBusy(()=>({code:200,body:{calendars:{test:{errors:[{}],busy:[]}}}}),'test',today,[],[],[]));
 });
 const msg=(id,text,type='private',chat=id)=>({message:{from:{id},chat:{id:chat,type},text}});
