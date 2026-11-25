@@ -76,3 +76,21 @@ function crmV2ReconcileTest(){
     return report;
   }finally{lock.releaseLock();}
 }
+
+ // Manual TEST recovery by trusted Apps Script editor, with explicit operation ID.
+function crmV2ListConflictsTest(){
+  const env=crmV2BoundTest_();
+  return env.port.list().filter(r=>r.status==="conflict").map(r=>({operationId:r.intent.id,bookingId:r.intent.desired.id,reason:r.reason}));
+}
+function crmV2RetryConflictTest(){
+  const lock=LockService.getScriptLock();
+  if(!lock.tryLock(5000))throw Error("System busy");
+  try{
+    const env=crmV2BoundTest_();
+    if(env.props.getProperty("CRM_V2_TEST_WRITE_ENABLED")!=="true")throw Error("CRM v2 TEST writes disabled");
+    const id=crmId_(env.props.getProperty("CRM_V2_RETRY_CONFLICT_OP"));
+    const r=crmRetryConflict_(env.port,id);
+    if(r.status==="done")env.props.deleteProperty("CRM_V2_RETRY_CONFLICT_OP");
+    return {operationId:id,status:r.status,reason:r.reason||null};
+  }finally{lock.releaseLock();}
+}
