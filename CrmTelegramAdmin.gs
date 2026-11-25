@@ -19,6 +19,7 @@ function crmAdminMoney_(env,id,revision){
   return {quote,summary:crmPaymentSummary_(id,quote,env.payments.list())};
 }
 function crmAdminCommand_(text,env,today,now,actor,token){
+  const tenant=crmTenantCommand_(text,env,today,now,actor,token);if(tenant)return tenant;
   const m=/^\/(add|move|cancel|pay)(?:@\w+)?\s+(.+)$/i.exec(text);
   if(!m)return null;
   const action=m[1].toLowerCase(),parts=m[2].split("|").map(x=>x.trim());
@@ -58,6 +59,7 @@ function crmAdminCommand_(text,env,today,now,actor,token){
   return record;
 }
 function crmAdminPreview_(r,env){
+  if(r.action==="tenant"){const p=r.tenant;return {text:["Добавить арендатора",p.name,p.direction,p.format==="group"?"Групповое":"Индивидуальное",p.regular?"Постоянный":"Обычный тариф"].join("\n"),reply_markup:{inline_keyboard:[[{text:"Подтвердить",callback_data:"v2|confirm|"+r.token},{text:"Не выполнять",callback_data:"v2|abort|"+r.token}]]}};}
   const b=r.desired||r.before,name=env.profiles.find(p=>p.id===b.tenantId)?.name||"Уточнить";
   const label={add:"Создать аренду",move:"Перенести аренду",cancel:"Отменить аренду",pay:"Отметить поступление"}[r.action];
   const lines=[label,name+" — "+b.direction,b.date+" "+crmTgTime_(b.from)+"–"+crmTgTime_(b.to)+" (МСК)"];
@@ -68,6 +70,7 @@ function crmAdminPreview_(r,env){
   return {text:lines.join("\n"),reply_markup:{inline_keyboard:[[{text:"Подтвердить",callback_data:"v2|confirm|"+r.token},{text:"Не выполнять",callback_data:"v2|abort|"+r.token}]]}};
 }
 function crmAdminExecute_(env,r,save,now,actor){
+  if(r.action==="tenant")return crmTenantExecute_(env,r,save,now,actor);
   if(r.actor!==actor)throw Error("Подтверждение принадлежит другому пользователю.");
   if(r.status==="done")return r;
   if(r.status==="aborted"||r.status==="preview"&&now>r.expires)throw Error("Подтверждение устарело.");
@@ -137,11 +140,11 @@ function crmTgAdminTest_(update,key){
     const cb=update.callback_query,actor=String((cb?cb.from:update.message.from).id),now=Date.now();
     env.today=Utilities.formatDate(new Date(now),"Europe/Moscow","yyyy-MM-dd");
     env.nowMinute=crmSheetMinute_(Utilities.formatDate(new Date(now),"Europe/Moscow","HH:mm"));
-    if(key==="v2|add")return {text:"/add Марина | ближайшая пятница с 16 до 18\n/move ID | завтра с 15 до 17\n/cancel ID\n/pay ID | полностью\n/pay ID | 500\nID показан в разделе Расписание. Все действия требуют подтверждения."};
     const prefix="CRM_TG_CMD_";
     const read=token=>JSON.parse(props.getProperty(prefix+token)||"null");
     const save=r=>{const json=JSON.stringify(r);props.setProperty(prefix+r.token,json);if(props.getProperty(prefix+r.token)!==json)throw Error("Command not persisted");};
-    if(cb){
+    const sessionKey="CRM_TG_UI_"+actor;
+    if(cb&&/^v2\|(?:confirm|abort)\|/.test(key)){
       const m=/^v2\|(confirm|abort)\|(\d{1,16})$/.exec(key);
       if(!m)return {text:"Кнопка устарела."};
       let r=read(m[2]);
@@ -153,6 +156,7 @@ function crmTgAdminTest_(update,key){
       try{
         r=crmAdminExecute_(env,r,save,now,actor);
         // Accepted booking/payment is durable. Projection is a repairable view.
+        if(r.action==="tenant")return {text:"Арендатор добавлен.",reply_markup:{inline_keyboard:[[{text:"Арендаторы",callback_data:"v2|tenants"},{text:"Добавить аренду",callback_data:"v2|add"}]]}};
         const finance=crmFinancialPass_(env.sheets["Аренды"],env.sheets["Арендаторы"],env.accepted,env.journal,env.profiles,env.tariff,env.payments.list(),env.flush,10);
         return {text:"Действие выполнено."+(r.action==="move"?" Проверь согласованную стоимость в CRM.":"")+(finance.errors||finance.review||finance.limited?" Финансовая сводка требует сверки.":"")};
       }catch(e){return {text:"Действие не подтверждено как завершенное. Проверь CRM или повтори эту же кнопку; не создавай новый запрос."};}
@@ -166,6 +170,17 @@ function crmTgAdminTest_(update,key){
       if(old.status==="preview"&&now<=old.expires)return crmAdminPreview_(old,env);
       return {text:"Этот запрос уже обработан или устарел."};
     }
+    let session=JSON.parse(props.getProperty(sessionKey)||"null"),nav;
+    if(session?.lastUpdate===token&&session.lastReply)return session.lastReply;
+    try{nav=crmTgUiStep_(key,!!cb,env,session,token,now);}
+    catch(e){return {text:"Запись изменилась или данные не распознаны. Проверь ввод либо открой меню заново."};}
+    if(nav?.menu){props.deleteProperty(sessionKey);return crmTgMenu_(crmTgRole_(update,owner,admins));}
+    if(nav?.reply){
+      const saved={...nav.state,lastUpdate:token,lastReply:nav.reply};
+      props.setProperty(sessionKey,JSON.stringify(saved));return nav.reply;
+    }
+    if(nav?.command)key=nav.command;
+    else if(cb)return {text:"Кнопка устарела. Открой /menu."};
     // Bounded retention: never remove started operations, including ambiguous writes.
     const all=props.getProperties(),keys=Object.keys(all).filter(k=>k.startsWith(prefix));
     for(const k of keys){
@@ -176,6 +191,6 @@ function crmTgAdminTest_(update,key){
     let record;
     try{record=crmAdminCommand_(key,env,env.today,now,actor,token);}catch(e){return {text:"Не удалось подготовить действие. Проверь имя, ID, время, цену или сумму оплаты."};}
     if(!record)return {text:"Открой «Добавить аренду» для примеров команд."};
-    save(record);return crmAdminPreview_(record,env);
+    save(record);props.deleteProperty(sessionKey);return crmAdminPreview_(record,env);
   }finally{lock.releaseLock();}
 }
