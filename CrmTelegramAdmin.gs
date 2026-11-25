@@ -116,7 +116,7 @@ function crmAdminExecute_(env,r,save,now,actor){
         if(!crmSyncEqual_(base,r.before)||env.accepted.revision(id)!==r.revision||!crmSyncEqual_(c,r.before)||
            (!crmSyncEqual_(s,r.before)&&!crmSyncEqual_(s,r.desired))||env.journal.hasPending(id))throw Error("Аренда изменилась.");
         if(!env.port.isAvailable(r.desired))throw Error("Время занято.");
-        if(!crmSyncEqual_(s,r.desired))env.port.compareAndWrite("sheet",id,s,r.desired);
+        if(!crmSyncEqual_(s,r.desired))env.port.compareAndWrite("sheet",id,s,r.desired,r.action==="add"?{totalKopecks:r.quote,tariffVersion:r.tariffVersion}:null);
         const intent=crmSyncIntent_({id:op,base:r.before,sheet:r.desired,calendar:r.before,calendarDeleted:false});
         if(intent.kind!=="intent"||crmRunSync_(env.port,intent.intent).status!=="done")throw Error("Требуется сверка.");
       }
