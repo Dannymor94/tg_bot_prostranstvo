@@ -7,7 +7,8 @@ function crmTenantProfiles_(sheet){
   const profiles=[],ids=new Set();
   for(const r of crmSheetRows_(sheet,"Арендаторы")){
     if(r.formulas.some(Boolean))throw Error("Formula in tenant row");
-    const v=r.values,id=crmId_(v[7]),name=crmSheetSafeText_(v[0]).trim(),direction=crmSheetSafeText_(v[1]).trim();
+    const v=r.values;if(v[7]==="")continue;
+    const id=crmId_(v[7]),name=crmSheetSafeText_(v[0]).trim(),direction=crmSheetSafeText_(v[1]).trim();
     if(!name||ids.has(id)||typeof v[3]!=="boolean")throw Error("Invalid tenant profile");
     ids.add(id);
     profiles.push({id,name,direction,format:crmSheetFormat_(v[2]),regular:v[3]});
