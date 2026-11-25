@@ -13,4 +13,4 @@ Include v2 modules plus existing Code.gs transport helpers (do not install legac
 ## Next
 Durable confirmed admin commands for create/move/cancel and payment, actor/revision/expiry binding, availability recheck, price review and idempotency. Tenant ID assignment, Calendar title editing, regular schedule, strict protections, backup/restore and legacy migration remain. Need native GAS deployment and live E2E. Manual TEST polling not a deployed service; no data or production changes.
 
-Code/test commit eb254f6707dd9a6794631a95c646790be86ae109; CI evidence tracked in PR #2.
+Code/test commit 433974d0b8790792c3b7681d3de94ef3792864ae. Initial CI failure on eb254f6 was a test assertion comparing unmerged occupancy ranges; the corrected test verifies the actual union/complement. CI evidence tracked in PR #2.
