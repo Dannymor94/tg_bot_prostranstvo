@@ -175,6 +175,7 @@ function crmTgAdminTest_(update,key){
     try{nav=crmTgUiStep_(key,!!cb,env,session,token,now);}
     catch(e){return {text:"Запись изменилась или данные не распознаны. Проверь ввод либо открой меню заново."};}
     if(nav?.menu){props.deleteProperty(sessionKey);return crmTgMenu_(crmTgRole_(update,owner,admins));}
+    if(nav?.pass){props.deleteProperty(sessionKey);return crmTgDispatch_(update,{owner,admins,cfg:env.tariff});}
     if(nav?.reply){
       const saved={...nav.state,lastUpdate:token,lastReply:nav.reply};
       props.setProperty(sessionKey,JSON.stringify(saved));return nav.reply;
