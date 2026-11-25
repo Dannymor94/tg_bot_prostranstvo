@@ -26,6 +26,7 @@ function crmFinancialRow_(row,booking,revision,profiles,cfg,entries){
   else if(booking.status==="draft")state="Черновик";
   else if(!hasQuote||quotedRevision!==revision)state="Проверить стоимость";
   else if(internal)state=payment.paidKopecks?"Внутренняя — проверить платеж":"Без оплаты (внутренняя)";
+  else if(payment.creditKopecks)state="Переплата — проверить возврат";
   // No receivable invented when quote missing; cancelled booking retains actual receipts.
   const balance=booking.status==="cancelled"?0:booking.status==="confirmed"&&hasQuote&&quotedRevision===revision?payment.balanceKopecks/100:"";
   const next=v.slice();
