@@ -1,4 +1,4 @@
-// Read-only v2 Telegram interface. Mutations are not enabled here.
+// v2 Telegram interface; admin mutation path is explicitly opt-in TEST only.
 // Use a dedicated replacement TEST bot token; never poll the v1 bot concurrently.
 function crmTgRole_(update,owner,admins){
   const callback=update?.callback_query,msg=callback?callback.message:update?.message,actor=callback?callback.from:msg?.from;
@@ -28,6 +28,10 @@ function crmTgDispatch_(update,env){
   const key=input.trim();
   const admin=role==="admin"||role==="owner";
   if(/^(?:\/start|\/menu|\/help)(?:@\w+)?$/i.test(key)||key==="v2|menu")return crmTgMenu_(role);
+  if(env.adminCommand&&(key==="v2|add"||/^(?:v2\|(?:confirm|abort)\||\/(?:add|move|cancel|pay)(?:@\w+)?(?:\s|$))/i.test(key))){
+    if(!admin)return {text:"Доступно только администратору."};
+    return env.adminCommand(update,key);
+  }
   if(key==="v2|free")return {text:"Напиши день и период. Например: «ближайший вторник вечером» или «завтра утром на 2 часа»."};
   if(key==="v2|rates"){
     const c=crmValidateTariff_(env.cfg),lines=["Тарифы, ₽/час (утро / день / вечер)"];
@@ -49,7 +53,7 @@ function crmTgAdminRead_(key,env,today){
   if(key==="v2|tenants")return ["Арендаторы",...env.profiles.slice(0,20).map(p=>p.name+" — "+p.direction+(p.regular?" (постоянный)":"")),env.profiles.length>20?"Первые 20; полный список в CRM.":""].filter(Boolean).join("\n");
   if(key==="v2|schedule"){
     const rows=ids.map(id=>env.port.read("sheet",id)).filter(b=>b&&b.date===today&&b.status!=="cancelled").sort((a,b)=>a.from-b.from);
-    return ["Расписание CRM на "+today+" (МСК)",...rows.slice(0,20).map(b=>crmTgTime_(b.from)+"–"+crmTgTime_(b.to)+" "+(env.profiles.find(p=>p.id===b.tenantId)?.name||"Уточнить")+" — "+b.direction),rows.length?"":"Нет записей в CRM.","Не является подтверждением свободного времени."].filter(Boolean).join("\n");
+    return ["Расписание CRM на "+today+" (МСК)",...rows.slice(0,20).map(b=>crmTgTime_(b.from)+"–"+crmTgTime_(b.to)+" "+(env.profiles.find(p=>p.id===b.tenantId)?.name||"Уточнить")+" — "+b.direction+"\nID: "+b.id),rows.length?"":"Нет записей в CRM.","Не является подтверждением свободного времени."].filter(Boolean).join("\n");
   }
   if(key==="v2|payments"){
     const rows=env.payments.list().filter(p=>p.date===today);
@@ -64,5 +68,6 @@ function crmTgTestDispatch_(update){
   const readBusy=date=>crmTgDayBusy_(crmGasCalendarRequest_,env.calendarId,date,
     [...env.port.inventory().ids.flatMap(id=>[env.port.read("sheet",id),env.port.read("accepted",id)])].filter(Boolean),env.journal.list(),crmUnclaimedRows_(env.sheets["Аренды"]));
   return crmTgDispatch_(update,{owner:props.getProperty("OWNER_CHAT_ID"),admins,cfg:env.tariff,today,nowMinute:crmSheetMinute_(clock),nowMs:Date.now(),
-    status:()=>props.getProperty("CRM_V2_LAST_REPORT"),readBusy,adminRead:key=>crmTgAdminRead_(key,env,today)});
+    status:()=>props.getProperty("CRM_V2_LAST_REPORT"),readBusy,adminRead:key=>crmTgAdminRead_(key,env,today),
+    adminCommand:(u,key)=>crmTgAdminTest_(u,key)});
 }
