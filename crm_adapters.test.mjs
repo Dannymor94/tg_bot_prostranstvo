@@ -137,3 +137,32 @@ test('composed sheet, accepted, calendar and journal ports converge on create/mo
  assert.equal(cp.read('b1'),null);assert.equal(sp.read('b1').status,'cancelled');
  assert.equal(s.data[1][7],500);assert.equal(ap.revision('b1'),3);
 });
+
+test('explicit Calendar title edit is recognized and converges to normalized metadata',()=>{
+ const c=fakeCal(),p=calPort(c.request,'test@group.calendar.google.com',id=>({t1:'Marina',t2:'Anna'})[id],undefined,name=>({Marina:{id:'t1'},Anna:{id:'t2'}})[name]||null);
+ p.compareAndWrite('b1',null,b());
+ const e=c.events.get(eventId('b1'));e.summary='Anna — Pilates';e.description+='\nОплата: частично';
+ const updated=p.read('b1');
+ assert.equal(updated.tenantId,'t2');assert.equal(updated.direction,'Pilates');assert.equal(updated.format,'group');
+ assert.equal(ctx.crmMergeBooking_(b(),b(),updated).priceReview,true);
+ assert.equal(p.normalize('b1',updated),true);
+ assert.equal(p.normalize('b1',updated),false);
+ assert.equal(ctx.crmCalendarSnapshot_(c.events.get(eventId('b1')),'b1',eventId('b1')).tenantId,'t2');
+ assert.match(c.events.get(eventId('b1')).description,/Оплата: частично$/);
+ assert.equal(c.events.size,1);
+});
+test('unknown title and active payment instruction cannot be silently overwritten',()=>{
+ const c=fakeCal(),p=calPort(c.request,'test@group.calendar.google.com',()=> 'Marina',undefined,name=>name==='Marina'?{id:'t1'}:null);
+ p.compareAndWrite('b1',null,b());
+ const e=c.events.get(eventId('b1'));e.summary='Unknown — Yoga';
+ assert.throws(()=>p.read('b1'),/unknown or ambiguous/);
+ e.summary='Marina — Pilates';e.description+='\nОплата: Отметить оплату';
+ assert.throws(()=>p.normalize('b1',p.read('b1')),/payment instruction/);
+ assert.match(e.description,/Отметить оплату$/);
+});
+test('title normalization refuses stale conditional write',()=>{
+ const c=fakeCal(),p=calPort(c.request,'test@group.calendar.google.com',()=> 'Marina',undefined,name=>name==='Marina'?{id:'t1'}:null);
+ p.compareAndWrite('b1',null,b());c.events.get(eventId('b1')).summary='Marina — Pilates';c.precondition=true;
+ assert.throws(()=>p.normalize('b1',p.read('b1')),/412/);
+ assert.equal(c.events.get(eventId('b1')).summary,'Marina — Pilates');
+});
