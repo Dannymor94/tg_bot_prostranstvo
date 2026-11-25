@@ -52,13 +52,19 @@ function crmV2ReconcileTest(){
     env.profiles=crmTenantProfiles_(env.sheets["Арендаторы"]);
     const calendarIntake=crmIntakeCalendarPass_(crmGasCalendarRequest_,env.calendarId,env.profiles,env.tariff,5);
     const sheetIntake=crmIntakeSheetPass_(env.sheets["Аренды"],env.profiles,env.tariff,()=>Utilities.getUuid(),env.flush,env.port.isAvailable,5);
+    const recurrenceEnabled=env.props.getProperty("CRM_V2_RECURRING_TEST_ENABLED")==="true";
+    const weekly=crmRecurringInputs_(env.sheets["Арендаторы"],env.profiles,env.tariff);
+    const today=Utilities.formatDate(new Date(),"Europe/Moscow","yyyy-MM-dd");
+    const recurring=recurrenceEnabled&&!weekly.errors.length?crmRecurringPass_(env.port,crmRecurringCandidates_(weekly.inputs,today,30,env.tariff),5):{created:0,existing:0,review:[],errors:[],limited:false};
+    recurring.enabled=recurrenceEnabled;recurring.invalidRules=weekly.errors.length;
     const report=crmRuntimePass_(env.port,10,env.props.getProperty("CRM_V2_SCAN_AFTER")||null);
     report.intake={tenants:tenantIntake,calendar:calendarIntake,sheet:sheetIntake};
+    report.recurring=recurring;
     report.finance=crmFinancialPass_(env.sheets["Аренды"],env.sheets["Арендаторы"],env.accepted,env.journal,env.profiles,env.tariff,env.payments.list(),env.flush,10);
-    report.ok=report.ok&&!tenantIntake.errors&&!tenantIntake.review&&!tenantIntake.incomplete&&!tenantIntake.limited&&!calendarIntake.errors&&!calendarIntake.review&&!calendarIntake.limited&&!sheetIntake.errors&&!sheetIntake.review&&!sheetIntake.incomplete&&!sheetIntake.limited&&!report.finance.errors&&!report.finance.review&&!report.finance.limited;
+    report.ok=report.ok&&!recurring.invalidRules&&!recurring.review.length&&!recurring.errors.length&&!recurring.limited&&!tenantIntake.errors&&!tenantIntake.review&&!tenantIntake.incomplete&&!tenantIntake.limited&&!calendarIntake.errors&&!calendarIntake.review&&!calendarIntake.limited&&!sheetIntake.errors&&!sheetIntake.review&&!sheetIntake.incomplete&&!sheetIntake.limited&&!report.finance.errors&&!report.finance.review&&!report.finance.limited;
     if(report.nextAfterId!==null)env.props.setProperty("CRM_V2_SCAN_AFTER",report.nextAfterId);
     env.props.setProperty("CRM_V2_LAST_REPORT",JSON.stringify({at:new Date().toISOString(),ok:report.ok,completed:report.completed,
-      pending:report.pending,unmanaged:report.unmanaged,conflicts:report.conflicts.length,errors:report.errors.length,limited:report.limited,intake:report.intake,finance:report.finance}));
+      pending:report.pending,unmanaged:report.unmanaged,conflicts:report.conflicts.length,errors:report.errors.length,limited:report.limited,intake:report.intake,finance:report.finance,recurring:{enabled:recurring.enabled,created:recurring.created,review:recurring.review.length,errors:recurring.errors.length,invalidRules:recurring.invalidRules,limited:recurring.limited}}));
     console.log(JSON.stringify({ok:report.ok,completed:report.completed,pending:report.pending,unmanaged:report.unmanaged,conflicts:report.conflicts.length,errors:report.errors.length}));
     return report;
   }finally{lock.releaseLock();}
