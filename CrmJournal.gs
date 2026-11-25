@@ -56,6 +56,19 @@ function crmJournalForSheet_(sheet,flush){
     flush();
     if(JSON.stringify(load(id))!==JSON.stringify(record))throw Error("Journal write not verified");
   }
+  // Explicit operator retry only. Regular save() still prohibits reopening.
+  function reopen(expected){
+    const record=crmJournalRecord_(expected);
+    if(record.status!=="conflict")throw Error("Retry requires conflict record");
+    const prior=rows().get(record.intent.id);
+    if(!prior||JSON.stringify(prior.record)!==JSON.stringify(record))throw Error("Conflict changed");
+    const target=sheet.getRange(prior.row,3,1,3);
+    if(target.getFormulas()[0].some(Boolean)||JSON.stringify(target.getValues()[0])!==JSON.stringify(["conflict",JSON.stringify(record.intent),record.reason]))throw Error("Conflict row changed");
+    const pending={intent:record.intent,status:"pending"};
+    target.setValues([["pending",JSON.stringify(record.intent),""]]);flush();
+    if(JSON.stringify(load(record.intent.id))!==JSON.stringify(pending))throw Error("Retry not verified");
+    return pending;
+  }
   function list(){return [...rows().values()].map(x=>x.record);}
-  return {load,hasPending,save,list};
+  return {load,hasPending,save,list,reopen};
 }
