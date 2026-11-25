@@ -7,7 +7,7 @@ function crmTgUiStep_(key,isCallback,env,session,token,now){
     return {state,reply:reply(text,choices.map((x,i)=>[{text:x.label.slice(0,100),callback_data:"v2|ui|"+token+"|"+i}]))};
   };
   const prompt=(text,kind,data={})=>output(text,[],{kind,...data});
-  const tenantLabel=p=>p.name+" — "+p.direction+(p.regular?" (постоянный)":"");
+  const tenantLabel=p=>p.name+" — "+p.direction+(p.internal?" (внутренний)":p.regular?" (постоянный)":"");
   const profile=id=>{const p=env.profiles.find(x=>x.id===id);if(!p)throw Error("Арендатор изменился.");return p;};
   const tenants=(page,mode)=>{
     const all=env.profiles.slice().sort((a,b)=>a.name.localeCompare(b.name)||a.id.localeCompare(b.id)),offset=page*8;
@@ -45,10 +45,10 @@ function crmTgUiStep_(key,isCallback,env,session,token,now){
     if(!session||session.expires<now||session.token!==m[1]||!session.choices[+m[2]])return {state:session,reply:reply("Кнопка устарела. Открой меню.")};
     const a=session.choices[+m[2]];
     if(a.kind==="tenants")return tenants(a.page,a.mode);
-    if(a.kind==="newTenant")return prompt("Напиши имя, направление, формат и постоянный статус через |.\nНапример: Анна | Йога | Групповое | нет\nФормат: Групповое или Индивидуальное. Постоянный: да или нет.","newTenant");
+    if(a.kind==="newTenant")return prompt("Напиши имя, направление, формат и категорию через |.\nНапример: Анна | Йога | Групповое | Обычный\nКатегория: Обычный, Постоянный или Внутренний.","newTenant");
     if(a.kind==="tenant"){
       const p=profile(a.id);
-      if(a.mode==="view")return output(p.name+"\n"+p.direction+"\n"+(p.format==="group"?"Групповое":p.format==="individual"?"Индивидуальное":"Формат не указан")+"\n"+(p.regular?"Постоянный арендатор":"Обычный тариф"),[{label:"Добавить аренду",action:{kind:"tenant",id:p.id,mode:"add"}},{label:"К арендаторам",action:{kind:"tenants",page:0,mode:"view"}}]);
+      if(a.mode==="view")return output(p.name+"\n"+p.direction+"\n"+(p.format==="group"?"Групповое":p.format==="individual"?"Индивидуальное":"Формат не указан")+"\n"+(crmTenantCategoryLabel_(p)),[{label:"Добавить аренду",action:{kind:"tenant",id:p.id,mode:"add"}},{label:"К арендаторам",action:{kind:"tenants",page:0,mode:"view"}}]);
       return prompt("Арендатор: "+p.name+"\nНапиши дату и время, например: «ближайшая пятница с 16 до 18».","addTime",{tenant:p});
     }
     if(a.kind==="bookings")return bookings(a.date,a.page,a.mode);
