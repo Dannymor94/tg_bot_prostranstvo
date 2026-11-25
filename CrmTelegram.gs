@@ -32,7 +32,7 @@ function crmTgDispatch_(update,env){
   const admin=role==="admin"||role==="owner";
   if(admin&&env.uiEnabled&&env.adminCommand&&(/^(?:\/start|\/menu|\/help)(?:@\w+)?$/i.test(key)||key==="v2|menu"))return env.adminCommand(update,key);
   if(/^(?:\/start|\/menu|\/help)(?:@\w+)?$/i.test(key)||key==="v2|menu")return crmTgMenu_(role);
-  if(env.adminCommand&&(key==="v2|add"||/^(?:v2\|(?:confirm|abort|ui)\||\/(?:add|move|cancel|pay|tenant)(?:@\w+)?(?:\s|$))/i.test(key))){
+  if(env.adminCommand&&(key==="v2|add"||/^(?:v2\|(?:confirm|abort|ui)\||\/(?:add|move|cancel|pay|tenant|quote)(?:@\w+)?(?:\s|$))/i.test(key))){
     if(!admin)return {text:"Доступно только администратору."};
     return env.adminCommand(update,key);
   }
