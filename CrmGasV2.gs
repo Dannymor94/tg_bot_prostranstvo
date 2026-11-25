@@ -30,7 +30,9 @@ function crmV2BoundTest_(){
     const p=crmTenantProfiles_(sheets["Арендаторы"]).find(x=>x.id===id);
     if(!p)throw Error("Unknown tenant");return p.name;
   };
-  const port=crmRuntimePort_(sheet,accepted,journal,crmGasCalendarRequest_,binding.calendarId,name,()=>Utilities.getUuid(),()=>crmUnclaimedRows_(sheets["Аренды"]));
+  const port=crmRuntimePort_(sheet,accepted,journal,crmGasCalendarRequest_,binding.calendarId,name,()=>Utilities.getUuid(),()=>crmUnclaimedRows_(sheets["Аренды"]),title=>{
+    const r=crmResolveTenant_(title,crmTenantProfiles_(sheets["Арендаторы"]));return r.kind==="resolved"?r.tenant:null;
+  });
   return {props,tariff,profiles,payments,port,sheets,accepted,journal,flush,calendarId:binding.calendarId};
 }
 function crmV2Preflight(){
