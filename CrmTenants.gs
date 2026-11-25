@@ -40,3 +40,34 @@ function crmTenantExecute_(env,r,save,now,actor){
   crmTenantAppend_(env.sheets["Арендаторы"],r.tenant,env.flush);
   r={...r,status:"done"};save(r);return r;
 }
+
+function crmTenantClaimPass_(sheet,newId,flush,limit){
+  if(!Number.isInteger(limit)||limit<1||limit>100)throw Error("Invalid tenant claim limit");
+  const report={claimed:0,review:0,incomplete:0,errors:0,limited:false};
+  const rows=crmSheetRows_(sheet,"Арендаторы"),profiles=crmTenantProfiles_(sheet);
+  const names=new Set(profiles.map(p=>crmNameKey_(p.name))),counts=new Map();
+  for(const r of rows)if(r.values[7]===""&&typeof r.values[0]==="string"&&r.values[0].trim()){
+    const key=crmNameKey_(r.values[0]);counts.set(key,(counts.get(key)||0)+1);
+  }
+  for(const r of rows){
+    if(r.values[7]!=="")continue;
+    try{
+      if(r.formulas.some(Boolean))throw Error("Formula in tenant row");
+      const v=r.values;
+      if([0,1,2].some(i=>v[i]==="")){report.incomplete++;continue;}
+      const key=crmNameKey_(v[0]);
+      if(names.has(key)||counts.get(key)!==1){report.review++;continue;}
+      if(report.claimed>=limit){report.limited=true;break;}
+      const p=crmTenantDraft_(v[0],v[1],crmSheetFormat_(v[2]),v[3]===""?false:v[3],newId());
+      if(crmTenantProfiles_(sheet).some(x=>x.id===p.id||crmNameKey_(x.name)===key))throw Error("Tenant identity changed");
+      const target=sheet.getRange(r.row,1,1,8);
+      if(target.getFormulas()[0].some(Boolean)||JSON.stringify(target.getValues()[0])!==JSON.stringify(v))throw Error("Tenant row changed");
+      const next=v.slice();next[0]=p.name;next[1]=p.direction;next[3]=p.regular;next[7]=p.id;
+      for(const x of next)if(typeof x==="string")crmSheetSafeText_(x);
+      target.setValues([next]);flush();
+      if(JSON.stringify(crmTenantProfiles_(sheet).find(x=>x.id===p.id))!==JSON.stringify(p))throw Error("Tenant claim not verified");
+      names.add(key);report.claimed++;
+    }catch(e){report.errors++;}
+  }
+  return report;
+}
