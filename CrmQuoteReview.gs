@@ -12,7 +12,8 @@ function crmQuoteReviewRow_(env,id){
   return {row,old};
 }
 function crmQuoteReviewPlan_(env,b,revision,choice){
-  const {old}=crmQuoteReviewRow_(env,b.id);
+  const {row,old}=crmQuoteReviewRow_(env,b.id);
+  if(row.values[10]!==""||env.hasCalendarPaymentIntent?.(b.id))throw Error("Clear pending payment instruction before reviewing price");
   if(b.status!=="confirmed"||!Number.isSafeInteger(revision)||revision<1||old.revision===revision||old.revision!==""&&old.revision>revision)throw Error("No quote review required");
   const p=env.profiles.find(x=>x.id===b.tenantId);
   if(!p)throw Error("Unknown tenant");
