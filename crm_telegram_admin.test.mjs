@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const ctx=vm.createContext({});
-for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmSheets.gs','CrmIntake.gs','CrmPayments.gs','CrmTenants.gs','CrmTelegramQuery.gs','CrmTelegramAdmin.gs','CrmTelegram.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
+for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmSheets.gs','CrmIntake.gs','CrmPayments.gs','CrmTenants.gs','CrmTelegramQuery.gs','CrmTelegramAdmin.gs','CrmTelegramNav.gs','CrmTelegram.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const {crmAdminCommand_:command,crmAdminExecute_:execute,crmAdminPreview_:preview}=ctx;
 const today='2026-11-25',now=Date.parse('2026-11-25T07:00:00Z');
@@ -85,4 +85,64 @@ test('guest cannot invoke command dispatcher',()=>{
  const env={owner:'42',admins:[],adminCommand:()=>{throw Error('must not call');}};
  const u={message:{from:{id:99},chat:{id:99,type:'private'},text:'/pay b1 | 500'}};
  assert.match(ctx.crmTgDispatch_(u,env).text,/только администратору/);
+});
+
+
+test('button navigation chooses tenant and exact interval without typing IDs',()=>{
+ const f=fixture(),step=ctx.crmTgUiStep_;
+ const list=step('v2|add',true,f.env,null,'201',now);
+ assert.match(list.reply.reply_markup.inline_keyboard[0][0].text,/Марина/);
+ const select=step('v2|ui|201|0',true,f.env,list.state,'202',now);
+ assert.equal(select.state.kind,'addTime');
+ const result=step('пятница с 16 до 18',false,f.env,select.state,'203',now);
+ assert.equal(result.command,'/add Марина | пятница с 16 до 18');
+ assert.equal(f.plan(result.command,'203').quote,153000);
+ assert.equal(f.states.sheet.size,0);
+ assert.match(step('v2|ui|201|0',true,f.env,select.state,'204',now).reply.text,/устарела/);
+});
+test('schedule navigation binds booking revision and uses existing payment and cancel previews',()=>{
+ const f=fixture(),id=f.seed(),step=ctx.crmTgUiStep_;
+ f.env.accepted.list=()=>[...f.states.accepted.values()].map(clone);
+ let list=step('v2|schedule',true,f.env,null,'301',now);
+ let choose=list.state.choices.findIndex(x=>x.kind==='date');
+ let select=step('v2|ui|301|'+choose,true,f.env,list.state,'302',now);
+ list=step('пятница',false,f.env,select.state,'303',now);
+ select=step('v2|ui|303|0',true,f.env,list.state,'304',now);
+ assert.match(select.reply.text,/Остаток: 1530 ₽/);
+ const pay=step('v2|ui|304|0',true,f.env,select.state,'305',now);
+ assert.equal(f.plan(pay.command,'305').payment.amountKopecks,153000);
+ f.rev.set(id,2);
+ assert.throws(()=>step('v2|ui|304|0',true,f.env,select.state,'306',now));
+ assert.equal(f.entries.length,0);
+});
+function tenantSheet(rows=[]){
+ const data=[clone(ctx.crmSheetHeaders_()['Арендаторы']),...clone(rows)],s={data,writes:0,getName:()=> 'Арендаторы',getLastColumn:()=>8,getLastRow:()=>data.length,getMaxRows:()=>1000};
+ s.getRange=(r,c,n,m)=>{
+ const values=()=>Array.from({length:n},(_,i)=>Array.from({length:m},(_,j)=>data[r-1+i]?.[c-1+j]??''));
+ return {getValues:values,getDisplayValues:()=>values().map(a=>a.map(String)),getFormulas:()=>Array.from({length:n},()=>Array(m).fill('')),
+ setValues(v){s.writes++;for(let i=0;i<n;i++){const row=data[r-1+i]??(data[r-1+i]=Array(8).fill(''));for(let j=0;j<m;j++)row[c-1+j]=v[i][j];}}};};return s;
+}
+test('new tenant preview and idempotent append after lost response',()=>{
+ const f=fixture(),sheet=tenantSheet();
+ f.env.sheets['Арендаторы']=sheet;f.env.flush=()=>{throw Error('lost response');};
+ const r=f.plan('/tenant Анна | Массаж | Индивидуальное | нет','401');
+ assert.match(preview(r,f.env).text,/Анна/);assert.equal(sheet.writes,0);
+ assert.throws(()=>f.run(r));assert.equal(f.record.status,'started');
+ f.env.flush=()=>{};assert.equal(f.run(f.record).status,'done');
+ assert.equal(sheet.writes,1);assert.equal(ctx.crmTenantProfiles_(sheet)[0].id,'tenant_401');
+ assert.throws(()=>ctx.crmTenantAppend_(sheet,{...r.tenant,id:'other'},()=>{}));
+});
+test('tenant ID claim preserves manual details and rejects duplicate names',()=>{
+ const s=tenantSheet([['Анна','Йога','Групповое','','contact','','note',''],['Борис','Массаж','Индивидуальное',true,'','','',''],[' Борис ','Йога','Групповое',false,'','','',''],['Черновик','','',false,'','','','']]);
+ let n=0;const r=ctx.crmTenantClaimPass_(s,()=> 'id_'+(++n),()=>{},10);
+ assert.equal(r.claimed,1);assert.equal(r.review,2);assert.equal(r.incomplete,1);
+ assert.equal(s.data[1][4],'contact');assert.equal(s.data[1][6],'note');assert.equal(s.data[1][3],false);
+ assert.equal(ctx.crmTenantClaimPass_(s,()=> 'id_'+(++n),()=>{},10).claimed,0);
+});
+test('guest cannot access navigation callback or tenant command',()=>{
+ const env={owner:'42',admins:[],adminCommand:()=>{throw Error('must not call');},uiEnabled:true};
+ for(const key of ['v2|ui|201|0','/tenant Анна | Йога | Групповое | нет']){
+ const u=key.startsWith('/')?{message:{from:{id:99},chat:{id:99,type:'private'},text:key}}:{callback_query:{from:{id:99},message:{chat:{id:99,type:'private'}},data:key}};
+ assert.match(ctx.crmTgDispatch_(u,env).text,/только администратору/);
+ }
 });
