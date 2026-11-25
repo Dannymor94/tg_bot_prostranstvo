@@ -73,14 +73,21 @@ function crmPaymentIntentsPass_(env,request,today,idFor,limit){
       const cal=crmPaymentCalendarRead_(request,env.calendarId,id);
       const calendarMark=cal.payment==="Оплата: "+CRM_PAYMENT_MARKER_;
       let stable,money=null;
-      try{stable=crmAdminReadStable_(env,id);money=crmAdminMoney_(env,id,stable.revision);}catch(e){
-        if(mark||calendarMark)report.review.push({id,reason:"payment_requires_stable_quote"});
+      try{stable=crmAdminReadStable_(env,id);}catch(e){
+        if(mark||calendarMark)report.review.push({id,reason:"payment_requires_stable_booking"});
         continue;
+      }
+      try{money=crmAdminMoney_(env,id,stable.revision);}catch(e){
+        if(mark||calendarMark){report.review.push({id,reason:"payment_requires_stable_quote"});continue;}
       }
       if(!crmSyncEqual_(cal.booking,stable.booking))throw Error("Calendar payment snapshot changed");
       if(mark||calendarMark){
         if(!budget){report.limited=true;continue;}
         budget--;
+        const latest=crmSheetRows_(sheet,"Аренды").filter(x=>x.values[11]===id);
+        if(latest.length!==1||latest[0].formulas.some(Boolean)||latest[0].values[10]!==mark)throw Error("Sheet payment action changed");
+        const latestCal=crmPaymentCalendarRead_(request,env.calendarId,id);
+        if(latestCal.event.etag!==cal.event.etag)throw Error("Calendar payment action changed");
         const settled=crmSettleMarked_(env,stable.booking,stable.revision,today,idFor,mark?"sheet":"calendar");
         money=settled.money;
         if(settled.kind==="recorded")report.receipts++;
