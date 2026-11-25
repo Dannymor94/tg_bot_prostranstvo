@@ -78,3 +78,9 @@ test('owner status distinguishes stale and degraded report',()=>{
  assert.match(status(JSON.stringify({at:'2026-11-24T00:00:00Z',ok:true,pending:0,unmanaged:0,conflicts:0,errors:0}),env.nowMs),/не подтверждено/);
  assert.match(status(JSON.stringify({at:'2026-11-25T06:00:00Z',ok:false,pending:1,unmanaged:0,conflicts:0,errors:0}),env.nowMs),/Требуется внимание/);
 });
+
+test('owner diagnostic explains interval conflict and bounded scan',()=>{
+ const report={at:'2026-11-25T06:00:00Z',ok:false,pending:1,unmanaged:0,conflicts:1,errors:0,limited:true,finance:{review:2},details:[{id:'b1',reason:'interval'},{id:'bad\nsecret',reason:'interval'}]};
+ const result=status(JSON.stringify(report),env.nowMs);
+ assert.match(result,/разные переносы/);assert.match(result,/Финансы требуют сверки: 2/);assert.match(result,/размером пакета/);assert.doesNotMatch(result,/secret/);
+});
