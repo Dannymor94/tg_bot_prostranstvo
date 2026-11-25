@@ -7,6 +7,7 @@ on:
     paths:
       - '*.gs'
       - '*.test.mjs'
+      - 'scripts/package-crm-v2.mjs'
       - 'appsscript.json'
       - '.github/workflows/studio-calendar-tests.yml'
   pull_request:
@@ -45,3 +46,12 @@ jobs:
         env:
           TZ: Europe/Moscow
         run: node --test *.test.mjs
+      - name: Build isolated CRM v2 installation bundle
+        run: node scripts/package-crm-v2.mjs
+      - name: Upload installation bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: crm-v2-test-install
+          path: dist/crm-v2-test/
+          if-no-files-found: error
+          retention-days: 14
