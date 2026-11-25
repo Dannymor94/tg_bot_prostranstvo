@@ -35,7 +35,7 @@ function crmV2BoundTest_(){
   };
   const port=crmRuntimePort_(sheet,accepted,journal,crmGasCalendarRequest_,binding.calendarId,name,()=>Utilities.getUuid(),()=>crmUnclaimedRows_(sheets["Аренды"]),title=>{
     const r=crmResolveTenant_(title,crmTenantProfiles_(sheets["Арендаторы"]));return r.kind==="resolved"?r.tenant:null;
-  });
+  },id=>crmCalendarCategoryColor_(crmTenantProfiles_(sheets["Арендаторы"]).find(p=>p.id===id)));
   return {props,tariff,profiles,payments,port,sheets,accepted,journal,flush,calendarId:binding.calendarId,
     hasCalendarPaymentIntent:id=>crmPaymentCalendarRead_(crmGasCalendarRequest_,binding.calendarId,id).payment==="Оплата: Отметить оплату"};
 }
