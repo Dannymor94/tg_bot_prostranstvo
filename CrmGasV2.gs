@@ -1,5 +1,8 @@
 // Manual TEST entry points. Never install v2 triggers while the v1 writer is active.
 // Script Properties must be configured in a separate Apps Script project; no IDs in code.
+function crmV2TestCalendarTitle_(title,reuse){
+  return typeof title==="string"&&(/^ТЕСТ — .*CRM v2/.test(title)||(reuse===true&&title==="ТЕСТ — Студия (GAS ↔ таблица)"));
+}
 function crmV2BoundTest_(){
   const props=PropertiesService.getScriptProperties();
   const binding=JSON.parse(props.getProperty("CRM_V2_BINDING")||"null");
@@ -12,7 +15,7 @@ function crmV2BoundTest_(){
      book.getSpreadsheetTimeZone()!=="Europe/Moscow")throw Error("Wrong CRM TEST spreadsheet");
   const cal=Calendar.CalendarList.get(binding.calendarId);
   if(!cal||cal.id!==binding.calendarId||cal.accessRole!=="owner"||cal.timeZone!=="Europe/Moscow"||
-     !/^ТЕСТ — .*CRM v2/.test(cal.summary||""))throw Error("Wrong or non-owned TEST calendar");
+     !crmV2TestCalendarTitle_(cal.summary,props.getProperty("CRM_V2_REUSE_TEST_CALENDAR")==="true"))throw Error("Wrong or non-owned TEST calendar");
   const sheets={};
   for(const name of ["Аренды","Арендаторы","Настройки","Оплаты","_CRM_JOURNAL","_CRM_ACCEPTED"]){
     const sheet=book.getSheetByName(name);
