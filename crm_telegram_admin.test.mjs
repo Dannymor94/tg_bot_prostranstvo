@@ -19,9 +19,10 @@ function fixture(){
   load:id=>clone(journal.get(id)||null),list:()=>[...journal.values()].map(clone),
   hasPending:id=>[...journal.values()].some(r=>r.status!=='done'&&r.intent.desired.id===id),
   save:r=>journal.set(r.intent.id,clone(r)),
-  compareAndWrite(t,id,before,desired){
+  compareAndWrite(t,id,before,desired,initialQuote=null){
    assert.equal(ctx.crmSyncEqual_(this.read(t,id),before),true);
    if(desired===null)states[t].delete(id);else states[t].set(id,clone(desired));
+   if(t==='sheet'&&initialQuote){const v=Array(17).fill('');v[6]=initialQuote.totalKopecks/100;v[11]=id;v[14]=initialQuote.tariffVersion;rows[id]=v;}
    if(t==='accepted')rev.set(id,(rev.get(id)||0)+1);
    if(env.fail===t)throw Error('ambiguous write');
   }};
@@ -41,7 +42,7 @@ test('preview is read-only; confirm creates once and preserves stable ID',()=>{
  const f=fixture(),r=f.plan('/add Марина | пятница с 16 до 18');
  assert.equal(r.quote,153000);assert.equal(f.states.sheet.size,0);
  assert.match(preview(r,f.env).text,/1530 ₽/);
- assert.equal(f.run(r).status,'done');assert.equal(f.states.calendar.size,1);
+ assert.equal(f.run(r).status,'done');assert.equal(f.states.calendar.size,1);assert.equal(f.rows[r.desired.id][6],1530);
  assert.equal(f.run(f.record).status,'done');assert.equal(f.rev.get(r.desired.id),1);
 });
 test('expired and other actor confirmations cannot write',()=>{
