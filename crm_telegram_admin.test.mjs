@@ -159,3 +159,30 @@ test('retry of free-text preview can route by durable update ID after navigation
  assert.equal(ctx.crmTgDispatch_(u,env).text,'preview');
  assert.equal(routed,u.message.text);
 });
+
+test('internal tenant creation, booking and receipt guard use explicit non-billable category',()=>{
+ const f=fixture(),sheet=tenantSheet();f.env.sheets['Арендаторы']=sheet;f.env.flush=()=>{};
+ const r=f.plan('/tenant Studio | Practice | Групповое | Внутренний','501');
+ assert.equal(r.tenant.internal,true);assert.equal(r.tenant.regular,false);
+ assert.match(preview(r,f.env).text,/Внутренний/);
+ assert.equal(f.run(r).status,'done');
+ const p=ctx.crmTenantProfiles_(sheet)[0];assert.equal(p.internal,true);
+ f.env.profiles.push(p);
+ const booking=f.plan('/add Studio | пятница с 16 до 18','502');
+ assert.equal(booking.quote,0);assert.match(booking.tariffVersion,/^internal:/);
+ assert.match(preview(booking,f.env).text,/без оплаты/);
+ assert.equal(f.run(booking).status,'done');
+ assert.equal(f.rows[booking.desired.id][6],0);
+ assert.equal(f.states.calendar.size,1);
+ assert.throws(()=>ctx.crmPlanPayment_(booking.desired,0,[],{id:'p',bookingId:booking.desired.id,date:today,kind:'receipt',amountKopecks:100,actor:'owner'}));
+});
+test('category dropdown schema accepts ordinary, regular and internal and writes category strings',()=>{
+ const sheet=tenantSheet();sheet.data[0][3]='Категория';
+ for(const [i,category] of ['Обычный','Постоянный','Внутренний'].entries()){
+  const p=ctx.crmTenantDraft_('Tenant '+i,'Yoga','group',category,'t'+i);
+  ctx.crmTenantAppend_(sheet,p,()=>{});
+  assert.equal(sheet.data[i+1][3],category);
+ }
+ assert.equal(ctx.crmTenantProfiles_(sheet)[1].regular,true);
+ assert.equal(ctx.crmTenantProfiles_(sheet)[2].internal,true);
+});
