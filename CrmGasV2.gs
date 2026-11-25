@@ -33,7 +33,8 @@ function crmV2BoundTest_(){
   const port=crmRuntimePort_(sheet,accepted,journal,crmGasCalendarRequest_,binding.calendarId,name,()=>Utilities.getUuid(),()=>crmUnclaimedRows_(sheets["Аренды"]),title=>{
     const r=crmResolveTenant_(title,crmTenantProfiles_(sheets["Арендаторы"]));return r.kind==="resolved"?r.tenant:null;
   });
-  return {props,tariff,profiles,payments,port,sheets,accepted,journal,flush,calendarId:binding.calendarId};
+  return {props,tariff,profiles,payments,port,sheets,accepted,journal,flush,calendarId:binding.calendarId,
+    hasCalendarPaymentIntent:id=>crmPaymentCalendarRead_(crmGasCalendarRequest_,binding.calendarId,id).payment==="Оплата: Отметить оплату"};
 }
 function crmV2Preflight(){
   // Read-only: no changes, no trigger creation.
