@@ -16,7 +16,7 @@ function crmCivilDate_(key) {
 }
 
 function crmValidateTariff_(cfg) {
-  if(!cfg||typeof cfg.version!=="string"||!cfg.version.trim()) throw Error("Missing tariff version");
+  if(!cfg||typeof cfg.version!=="string"||!cfg.version.trim()||cfg.version.startsWith("internal:")) throw Error("Invalid tariff version");
   crmCivilDate_(cfg.effectiveFrom);
   const b=cfg.boundaries;
   if(!Array.isArray(b)||b.length!==4||!b.every((v,i)=>Number.isInteger(v)&&v>=0&&v<=1440&&(i===0||v>b[i-1]))) throw Error("Invalid time boundaries");
