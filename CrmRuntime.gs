@@ -124,9 +124,10 @@ function crmRuntimePort_(sheet,accepted,journal,request,calendarId,tenantName,ne
   const isAvailable=(b,ignoreRow=null)=>!crmUnclaimedOverlap_(b,unclaimedRows(),ignoreRow)&&crmRuntimeAvailable_(b,[...sheet.list(),...accepted.list()],journal.list(),x=>crmCalendarBusy_(request,calendarId,x,crmRuntimeEventId_(x.id)));
   return {...journal,newId,inventory,isAvailable,
     read(target,id){if(!targets[target])throw Error("Unknown target");return targets[target].read(id);},
-    compareAndWrite(target,id,before,desired){
+    compareAndWrite(target,id,before,desired,initialQuote=null){
       if(!targets[target])throw Error("Unknown target");
       if(target==="calendar"&&desired!==null&&!isAvailable(desired))throw Error("Calendar occupancy changed");
-      return targets[target].compareAndWrite(id,before,desired);
+      if(initialQuote!==null&&target!=="sheet")throw Error("Initial quote requires Sheet creation");
+      return targets[target].compareAndWrite(id,before,desired,initialQuote);
     }};
 }
