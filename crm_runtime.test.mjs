@@ -3,22 +3,23 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const ctx=vm.createContext({});
-for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmJournal.gs','CrmCalendar.gs','CrmRuntime.gs','CrmGasV2.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
+for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmJournal.gs','CrmCalendar.gs','CrmSheets.gs','CrmTelegramQuery.gs','CrmRecurring.gs','CrmRuntime.gs','CrmGasV2.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
 const {crmRuntimePass_:pass,crmRuntimeAvailable_:available,crmCalendarBusy_:busy,crmSyncIntent_:plan}=ctx;
 const copy=x=>JSON.parse(JSON.stringify(x));
 const b=(o={})=>({id:'b1',date:'2026-11-27',from:960,to:1080,tenantId:'t1',direction:'Yoga',format:'group',status:'confirmed',...o});
 function fake(seed={}){
- const states={sheet:new Map(),calendar:new Map(),accepted:new Map()},records=new Map(),writes=[];
+ const states={sheet:new Map(),calendar:new Map(),accepted:new Map()},records=new Map(),writes=[],quotes=new Map();
  for(const [target,arr] of Object.entries(seed))for(const x of arr)states[target].set(x.id,copy(x));
  let serial=0;
- const p={states,records,writes,fail:null,occupied:false,
+ const p={states,records,writes,quotes,fail:null,occupied:false,
   inventory:()=>({ids:[...new Set(Object.values(states).flatMap(m=>[...m.keys()]))],unmanaged:[]}),
   list:()=>[...records.values()].map(copy),load:id=>records.has(id)?copy(records.get(id)):null,
   hasPending:id=>[...records.values()].some(r=>r.status!=='done'&&r.intent.desired.id===id),
   save:r=>records.set(r.intent.id,copy(r)),newId:()=> 'op'+(++serial),
   read:(t,id)=>states[t].has(id)?copy(states[t].get(id)):null,
   isAvailable:()=>!p.occupied,
-  compareAndWrite(t,id,before,desired){
+  compareAndWrite(t,id,before,desired,quote=null){
+   if(quote)quotes.set(id,copy(quote));
    assert.equal(ctx.crmSyncEqual_(p.read(t,id),before),true);
    if(desired===null)states[t].delete(id);else states[t].set(id,copy(desired));
    writes.push(t+':'+id);
@@ -89,4 +90,57 @@ test('unknown inventory prevents writes; unmanaged events degrade report',()=>{
  assert.throws(()=>pass(p,10));assert.equal(p.writes.length,0);
  p.inventory=()=>({ids:[],unmanaged:['manual']});
  assert.equal(pass(p,10).ok,false);
+});
+
+const recurring=ctx.crmRecurringPass_,rules=ctx.crmRecurringRules_,candidates=ctx.crmRecurringCandidates_;
+const tariff=ctx.crmDefaultTariff_(),today='2026-11-25';
+const profile={id:'t1',name:'Tenant',direction:'Yoga',format:'group',regular:true};
+const weekly=(raw,p=profile,days=14)=>candidates([{profile:p,rules:rules(raw,tariff)}],today,days,tariff);
+test('weekly rules validate exact hours and produce stable future dates',()=>{
+ assert.deepEqual(copy(rules('Пн 18:30–20:00; Ср 18:30-20:00',tariff)),[{weekday:1,from:1110,to:1200},{weekday:3,from:1110,to:1200}]);
+ const x=weekly('Пт 16:00-18:00');
+ assert.deepEqual(x.map(r=>r.booking.date).join(','),'2026-11-27,2026-12-04');
+ assert.equal(x[0].quote.totalKopecks,153000);
+ assert.equal(x[0].booking.id,weekly('Пт 15:00-17:00')[0].booking.id);
+ for(const raw of ['Пн 05:00-06:00','Пн 18:30-18:00','Пн 09:00-10:00; Пн 12:00-13:00','Пн 18:99-20:00','Monday 08:00-09:00'])assert.throws(()=>rules(raw,tariff));
+});
+test('internal weekly bookings use zero quote and ordinary bookings use full rate',()=>{
+ assert.equal(weekly('Пт 16:00-18:00',{...profile,regular:false,internal:true})[0].quote.totalKopecks,0);
+ assert.equal(weekly('Пт 16:00-18:00',{...profile,regular:false})[0].quote.totalKopecks,170000);
+});
+test('recurring stage creates once, then converges through existing journal',()=>{
+ const p=fake(),x=weekly('Пт 16:00-18:00');
+ const r=recurring(p,x,1);assert.equal(r.created,1);assert.equal(r.limited,true);
+ assert.equal(p.quotes.get(x[0].booking.id).totalKopecks,153000);
+ assert.equal(recurring(p,x,5).created,1);
+ assert.equal(pass(p,10).completed,2);
+ assert.equal(recurring(p,x,5).created,0);assert.equal(p.states.calendar.size,2);
+});
+test('cancelled or moved recurrence is not resurrected after a rule edit',()=>{
+ const x=weekly('Пт 16:00-18:00'),first=x[0].booking;
+ const p=fake({sheet:[{...first,status:'cancelled'}],accepted:[{...first,status:'cancelled'}]});
+ assert.equal(recurring(p,[x[0]],5).existing,1);
+ const moved={...first,date:'2026-11-28'};
+ const q=fake({sheet:[moved],accepted:[moved],calendar:[moved]});
+ assert.equal(recurring(q,[weekly('Пт 15:00-17:00')[0]],5).existing,1);
+ assert.equal(q.writes.length,0);
+});
+test('existing manual booking or historical original slot prevents duplicate occurrence',()=>{
+ const x=weekly('Пт 16:00-18:00')[0];
+ const manual=b(),p=fake({sheet:[manual],accepted:[manual],calendar:[manual]});
+ assert.equal(recurring(p,[x],5).existing,1);assert.equal(p.writes.length,0);
+ p.states.calendar.set('b1',b({date:'2026-11-28'}));
+ assert.equal(pass(p,10).completed,1);
+ assert.equal(recurring(p,[x],5).existing,1);
+ const q=fake({sheet:[b({from:600,to:660})]});
+ assert.equal(recurring(q,[x],5).review[0].reason,'existing_tenant_day');
+ assert.equal(q.writes.length,0);
+});
+test('occupied slot and lost response fail safely, retry does not create duplicate',()=>{
+ const x=weekly('Пт 16:00-18:00'),p=fake();p.occupied=true;
+ assert.equal(recurring(p,x,5).review.length,2);assert.equal(p.writes.length,0);
+ p.occupied=false;p.fail='sheet';
+ assert.equal(recurring(p,x,5).errors.length,1);assert.equal(p.states.sheet.size,1);
+ p.fail=null;assert.equal(recurring(p,x,5).created,1);
+ assert.equal(p.states.sheet.size,2);
 });
