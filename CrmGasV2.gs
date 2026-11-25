@@ -48,12 +48,14 @@ function crmV2ReconcileTest(){
     const env=crmV2BoundTest_();
     if(env.props.getProperty("CRM_V2_TEST_WRITE_ENABLED")!=="true")throw Error("CRM v2 test writes disabled");
     // Deliberately manual invocation until live acceptance and strict protections.
+    const tenantIntake=crmTenantClaimPass_(env.sheets["Арендаторы"],()=>Utilities.getUuid(),env.flush,10);
+    env.profiles=crmTenantProfiles_(env.sheets["Арендаторы"]);
     const calendarIntake=crmIntakeCalendarPass_(crmGasCalendarRequest_,env.calendarId,env.profiles,env.tariff,5);
     const sheetIntake=crmIntakeSheetPass_(env.sheets["Аренды"],env.profiles,env.tariff,()=>Utilities.getUuid(),env.flush,env.port.isAvailable,5);
     const report=crmRuntimePass_(env.port,10,env.props.getProperty("CRM_V2_SCAN_AFTER")||null);
-    report.intake={calendar:calendarIntake,sheet:sheetIntake};
+    report.intake={tenants:tenantIntake,calendar:calendarIntake,sheet:sheetIntake};
     report.finance=crmFinancialPass_(env.sheets["Аренды"],env.sheets["Арендаторы"],env.accepted,env.journal,env.profiles,env.tariff,env.payments.list(),env.flush,10);
-    report.ok=report.ok&&!calendarIntake.errors&&!calendarIntake.review&&!calendarIntake.limited&&!sheetIntake.errors&&!sheetIntake.review&&!sheetIntake.incomplete&&!sheetIntake.limited&&!report.finance.errors&&!report.finance.review&&!report.finance.limited;
+    report.ok=report.ok&&!tenantIntake.errors&&!tenantIntake.review&&!tenantIntake.incomplete&&!tenantIntake.limited&&!calendarIntake.errors&&!calendarIntake.review&&!calendarIntake.limited&&!sheetIntake.errors&&!sheetIntake.review&&!sheetIntake.incomplete&&!sheetIntake.limited&&!report.finance.errors&&!report.finance.review&&!report.finance.limited;
     if(report.nextAfterId!==null)env.props.setProperty("CRM_V2_SCAN_AFTER",report.nextAfterId);
     env.props.setProperty("CRM_V2_LAST_REPORT",JSON.stringify({at:new Date().toISOString(),ok:report.ok,completed:report.completed,
       pending:report.pending,unmanaged:report.unmanaged,conflicts:report.conflicts.length,errors:report.errors.length,limited:report.limited,intake:report.intake,finance:report.finance}));
