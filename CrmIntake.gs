@@ -3,15 +3,22 @@
 function crmNameKey_(value){
   return crmSheetSafeText_(value).normalize("NFC").trim().replace(/\s+/g," ").toLowerCase();
 }
+function crmTenantCategory_(value){
+  if(value===false||value==="Обычный")return {regular:false};
+  if(value===true||value==="Постоянный")return {regular:true};
+  if(value==="Внутренний")return {regular:false,internal:true};
+  throw Error("Invalid tenant category");
+}
+function crmTenantCategoryLabel_(p){return p.internal?"Внутренний":p.regular?"Постоянный":"Обычный";}
 function crmTenantProfiles_(sheet){
   const profiles=[],ids=new Set();
   for(const r of crmSheetRows_(sheet,"Арендаторы")){
     if(r.formulas.some(Boolean))throw Error("Formula in tenant row");
     const v=r.values;if(v[7]==="")continue;
     const id=crmId_(v[7]),name=crmSheetSafeText_(v[0]).trim(),direction=crmSheetSafeText_(v[1]).trim();
-    if(!name||ids.has(id)||typeof v[3]!=="boolean")throw Error("Invalid tenant profile");
+    if(!name||ids.has(id))throw Error("Invalid tenant profile");
     ids.add(id);
-    profiles.push({id,name,direction,format:crmSheetFormat_(v[2]),regular:v[3]});
+    profiles.push({id,name,direction,format:crmSheetFormat_(v[2]),...crmTenantCategory_(v[3])});
   }
   return profiles;
 }
@@ -20,7 +27,7 @@ function crmResolveTenant_(name,profiles){
   const key=crmNameKey_(name),seen=new Set(),matches=[];
   for(const p of profiles){
     crmId_(p.id);
-    if(seen.has(p.id)||!crmNameKey_(p.name)||typeof p.regular!=="boolean"||typeof p.direction!=="string"||
+    if(seen.has(p.id)||!crmNameKey_(p.name)||typeof p.regular!=="boolean"||(p.internal!==undefined&&typeof p.internal!=="boolean")||(p.internal&&p.regular)||typeof p.direction!=="string"||
        (p.format!==null&&!["individual","group"].includes(p.format)))throw Error("Invalid tenant directory");
     seen.add(p.id);
     if(crmNameKey_(p.name)===key)matches.push(p);
@@ -41,7 +48,7 @@ function crmManualBooking_(input,profiles,cfg){
   if(!["draft","confirmed"].includes(status))throw Error("Invalid new booking status");
   const booking=crmBookingSnapshot_({id:input.id,...occupied,tenantId:p.id,direction,format,status});
   let quote;
-  try{quote=crmQuote_({...booking,regular:p.regular},cfg);}catch(e){
+  try{quote=crmQuote_({...booking,regular:p.regular,internal:p.internal},cfg);}catch(e){
     return {kind:"review",reason:"outside_tariff_or_invalid_quote",occupied,name:p.name};
   }
   return {kind:"ready",booking,quote,status,tenantName:p.name};
