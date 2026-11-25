@@ -17,7 +17,7 @@ function crmTgParseQuery_(raw,today,now,cfg){
     const [,h,m,j,k]=times[0];from=Number(h)*60+Number(m||0);to=Number(j)*60+Number(k||0);
     if(+h>23||+j>23||+(m||0)>59||+(k||0)>59||to<=from)return error("Проверь время начала и окончания.");
   }
-  const dates=take(/(?<![\d.])(\d{1,2})[./](\d{1,2})(?:[./](\d{4}))?(?![\d.])/gu);
+  const dates=take(/(?<![\d.])(\d{1,2})[./](\d{1,2})(?:[./](\d{4}))?(?![\d.])(?!\s*(?:час[а-я]*|ч|мин[а-я]*)(?!\p{L}))/gu);
   const months=["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
   const named=take(/(?<!\d)(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\s+(\d{4}))?(?![\p{L}\d])/gu);
   const relative=take(/(?<!\p{L})(послезавтра|завтра|сегодня)(?!\p{L})/gu);
@@ -38,7 +38,8 @@ function crmTgParseQuery_(raw,today,now,cfg){
   const formatWords=take(/(?<!\p{L})(индивидуальн(?:ое|ый|ая|о)|группов(?:ое|ой|ая|ые)|группа)(?!\p{L})/gu);
   if(formatWords.length>1)return error("Укажи один формат занятия.");
   const format=formatWords.length?(formatWords[0][1].startsWith("индивидуаль")?"individual":"group"):null;
-  const price=take(/(?<!\p{L})(?:сколько\s+стоит|стоимость|цена)(?!\p{L})/gu).length>0;
+  const prices=take(/(?<!\p{L})(?:сколько\s+стоит|стоимость|цена)(?!\p{L})/gu);
+  const price=prices.length>0;
   s=s.replace(/\/free(?:@\w+)?/g," ").replace(/(?<!\p{L})(?:есть\s+ли|свободн(?:о|ое|ые|ый)|свободных|окна|окно|время|аренда|аренды|можно|пожалуйста|студия|студию|в|на|за)(?!\p{L})/gu," ").replace(/[?!,;\s]+/g," ").trim();
   if(s)return error("Не удалось однозначно разобрать запрос. Например: «завтра утром на 2 часа».");
   const weekday=dayWords.length?weekdays.findIndex(a=>a.includes(dayWords[0][1])):-1;
