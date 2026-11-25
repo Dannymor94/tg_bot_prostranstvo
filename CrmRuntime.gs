@@ -135,3 +135,21 @@ function crmRuntimePort_(sheet,accepted,journal,request,calendarId,tenantName,ne
       return targets[target].compareAndWrite(id,before,desired,initialQuote);
     }};
 }
+
+ // Operator may retry an existing intent, not force a winner or change history.
+function crmRetryConflict_(port,opId){
+  crmId_(opId);
+  const raw=port.load(opId);
+  if(!raw)throw Error("Unknown operation");
+  const r=crmJournalRecord_(raw),intent=r.intent;
+  if(r.status==="done")return r;
+  if(r.status==="pending")return crmRunSync_(port,intent);
+  const expected={sheet:intent.sheet,calendar:intent.calendar,accepted:intent.base};
+  for(const t of ["sheet","calendar","accepted"]){
+    const current=port.read(t,intent.desired.id);
+    if(!crmSyncEqual_(current,expected[t])&&!crmSyncEqual_(current,crmSyncDesired_(intent,t)))throw Error("Resolve conflicting projection before retry");
+  }
+  if(!port.isAvailable(intent.desired))throw Error("Resolve overlapping booking before retry");
+  port.reopen(r);
+  return crmRunSync_(port,intent);
+}
