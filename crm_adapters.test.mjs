@@ -166,3 +166,28 @@ test('title normalization refuses stale conditional write',()=>{
  assert.throws(()=>p.normalize('b1',p.read('b1')),/412/);
  assert.equal(c.events.get(eventId('b1')).summary,'Marina — Pilates');
 });
+
+test('category colors use native palette, reject inconsistent categories',()=>{
+ const color=ctx.crmCalendarCategoryColor_;
+ assert.equal(color({regular:true}),'2');
+ assert.equal(color({regular:false,internal:true}),'3');
+ assert.equal(color({regular:false}),'6');
+ assert.throws(()=>color({regular:true,internal:true}));
+ assert.throws(()=>color(null));
+});
+test('color creation and category-only normalization preserve booking and payment marker',()=>{
+ const c=fakeCal();let category={regular:true};
+ const p=calPort(c.request,'test@group.calendar.google.com',()=> 'Marina',undefined,undefined,()=>ctx.crmCalendarCategoryColor_(category));
+ p.compareAndWrite('b1',null,b());
+ const e=c.events.get(eventId('b1'));
+ assert.equal(e.colorId,'2');e.description+='\nОплата: Отметить оплату';
+ category={regular:false,internal:true};
+ assert.equal(p.normalize('b1',b()),true);
+ const after=c.events.get(eventId('b1'));
+ assert.equal(after.colorId,'3');assert.match(after.description,/Отметить оплату$/);
+ assert.deepEqual(plain(p.read('b1')),b());
+ assert.equal(p.normalize('b1',b()),false);
+ category={regular:false};
+ assert.equal(p.normalize('b1',b()),true);
+ assert.equal(c.events.get(eventId('b1')).colorId,'6');
+});
