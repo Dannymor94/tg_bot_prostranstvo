@@ -49,7 +49,18 @@ function crmCalendarSnapshot_(event,id,expectedEventId){
   if(booking.status==="cancelled"||event.transparency==="transparent"||event.visibility!=="private")throw Error("Invalid Calendar projection");
   return booking;
 }
-function crmCalendarPort_(request,calendarId,tenantName,eventIdFor){
+// Explicit title grammar; never infer a new person from a partial match.
+function crmCalendarTitleBooking_(event,booking,tenantName,resolveTitle){
+  const expected=crmCalendarBody_(booking,booking.tenantId===null?"":tenantName(booking.tenantId)).summary;
+  if(event.summary===expected)return booking;
+  if(typeof resolveTitle!=="function"||typeof event.summary!=="string"||/[\r\n]/.test(event.summary))throw Error("Calendar title changed; review required");
+  const parts=event.summary.trim().split(/\s+[—–-]\s+/);
+  if(parts.length!==2||!parts[0].trim()||!parts[1].trim())throw Error("Calendar title changed; review required");
+  const profile=resolveTitle(parts[0].trim());
+  if(!profile)throw Error("Calendar title changed; unknown or ambiguous tenant");
+  return crmBookingSnapshot_({...booking,tenantId:profile.id,direction:parts[1].trim()});
+}
+function crmCalendarPort_(request,calendarId,tenantName,eventIdFor,resolveTitle){
   if(typeof request!=="function"||typeof calendarId!=="string"||!calendarId||calendarId==="primary"||typeof tenantName!=="function")throw Error("Invalid Calendar binding");
   const prefix="/calendars/"+encodeURIComponent(calendarId),events=prefix+"/events";
   function eventId(id){const value=eventIdFor?eventIdFor(id):crmCalendarEventId_(id);if(typeof value!=="string"||!value||value.length>1024)throw Error("Invalid Calendar event ID");return value;}
@@ -62,9 +73,8 @@ function crmCalendarPort_(request,calendarId,tenantName,eventIdFor){
     if(r.code===404||r.code===410){verifiedCalendar();return {booking:null,event:null};}
     if(r.code!==200)throw Error("Calendar read failed: "+r.code);
     if(r.body?.id===eid&&r.body.status==="cancelled"){verifiedCalendar();return {booking:null,event:null};}
-    const booking=crmCalendarSnapshot_(r.body,id,eid);
-    const expectedSummary=crmCalendarBody_(booking,booking.tenantId===null?"":tenantName(booking.tenantId)).summary;
-    if(r.body.summary!==expectedSummary)throw Error("Calendar title changed; review required");
+    const raw=crmCalendarSnapshot_(r.body,id,eid);
+    const booking=crmCalendarTitleBooking_(r.body,raw,tenantName,resolveTitle);
     return {booking,event:r.body};
   }
   function read(id){return fetch(id).booking;}
@@ -96,7 +106,22 @@ function crmCalendarPort_(request,calendarId,tenantName,eventIdFor){
     }
     if(!crmSyncEqual_(read(id),desired))throw Error("Calendar write not verified");
   }
-  return {read,compareAndWrite};
+  function normalize(id,expected){
+    const current=fetch(id);
+    if(!crmSyncEqual_(current.booking,expected))throw Error("Calendar normalization changed");
+    if(expected===null)return false;
+    const body=crmCalendarBody_(expected,expected.tenantId===null?"":tenantName(expected.tenantId));
+    const payment=crmCalendarPaymentLine_(current.event.description).payment;
+    if(payment)body.description+="\n"+payment;
+    if(current.event.summary===body.summary&&current.event.description===body.description)return false;
+    if(payment==="Оплата: Отметить оплату")throw Error("Resolve payment instruction before normalizing title");
+    const result=request("PATCH",events+"/"+encodeURIComponent(eventId(id)),{summary:body.summary,description:body.description},{"If-Match":current.event.etag});
+    if(result.code!==200)throw Error("Calendar normalization failed: "+result.code);
+    const verified=fetch(id);
+    if(!crmSyncEqual_(verified.booking,expected)||verified.event.summary!==body.summary||verified.event.description!==body.description)throw Error("Calendar normalization not verified");
+    return true;
+  }
+  return {read,compareAndWrite,normalize};
 }
 function crmCalendarChanges_(request,calendarId,syncToken){
   if(typeof calendarId!=="string"||!calendarId||calendarId==="primary"||(syncToken!==null&&(typeof syncToken!=="string"||!syncToken)))throw Error("Invalid Calendar list parameters");
