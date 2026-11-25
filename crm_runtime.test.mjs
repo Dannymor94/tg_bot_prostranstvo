@@ -159,3 +159,12 @@ test('explicit conflict retry requires corrected occupancy and original snapshot
  assert.equal(p.states.calendar.size,1);
  const n=p.writes.length;assert.equal(ctx.crmRetryConflict_(p,op).status,'done');assert.equal(p.writes.length,n);
 });
+
+test('calendar reuse is opt-in and accepts only the exact approved TEST title',()=>{
+ const allowed=ctx.crmV2TestCalendarTitle_;
+ assert.equal(allowed('ТЕСТ — Студия (GAS ↔ таблица)',false),false);
+ assert.equal(allowed('ТЕСТ — Студия (GAS ↔ таблица)',true),true);
+ assert.equal(allowed('ТЕСТ — Студия CRM v2',false),true);
+ assert.equal(allowed('Студия',true),false);
+ assert.equal(allowed('ТЕСТ — другой календарь',true),false);
+});
