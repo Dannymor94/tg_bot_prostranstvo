@@ -144,3 +144,18 @@ test('occupied slot and lost response fail safely, retry does not create duplica
  p.fail=null;assert.equal(recurring(p,x,5).created,1);
  assert.equal(p.states.sheet.size,2);
 });
+
+test('explicit conflict retry requires corrected occupancy and original snapshots',()=>{
+ const p=fake({sheet:[b()]});
+ p.reopen=r=>{assert.deepEqual(copy(p.load(r.intent.id)),copy(r));p.records.set(r.intent.id,{intent:r.intent,status:'pending'});};
+ p.occupied=true;
+ assert.equal(pass(p,10).conflicts[0].reason,'overlap');
+ const op=p.list()[0].intent.id;
+ assert.throws(()=>ctx.crmRetryConflict_(p,op),/overlapping/);
+ p.occupied=false;p.states.sheet.set('b1',b({direction:'Different'}));
+ assert.throws(()=>ctx.crmRetryConflict_(p,op),/projection/);
+ p.states.sheet.set('b1',b());
+ assert.equal(ctx.crmRetryConflict_(p,op).status,'done');
+ assert.equal(p.states.calendar.size,1);
+ const n=p.writes.length;assert.equal(ctx.crmRetryConflict_(p,op).status,'done');assert.equal(p.writes.length,n);
+});
