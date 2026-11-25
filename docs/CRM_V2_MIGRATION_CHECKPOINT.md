@@ -1,0 +1,12 @@
+# CRM v2 — isolated installation and migration checkpoint (2026-11-25)
+
+The original workbook, Calendar and scripts remain untouched. The private complete legacy workbook copy is the migration source, and the separate v2 TEST workbook is the destination.
+
+Completed:
+- Extracted standalone Telegram transport into CrmTelegramTransport.gs; v2 no longer depends on legacy Code.gs for polling and outbox delivery.
+- Added scripts/package-crm-v2.mjs and CI artifact generation. Bundle includes 24 Crm*.gs modules in one source, explicit Google Apps Script manifest, INSTALL.md and BUILD.json with commit and file SHA-256 hashes. It excludes legacy writers and checks syntax and duplicate top-level functions.
+- CI at d36a27bcbe602aa3c8258f112123464dd45cf039: 224 passed, no failures/skips. Installation artifact crm-v2-test-install ID 15004227099, run 45575979269, retained 14 days. Rebuild via CI when expired.
+- Verified native TEST settings labels and displayed tariffs against the configured schema.
+- Private TEST workbook has a new review-only tab "Импорт — проверка", A1:G56. Read copied legacy Бронирование A2041:Q2160 (96 returned date rows). Verified 55 candidate booking blocks, 9 distinct labels, first occupied date 2026-11-26, last 2027-01-02. Categories assigned from the owner's explicit instructions: 33 internal, 10 regular paid, 12 other preliminary ordinary. Eleven adjacent +30 markers require exact interval verification. Grid hours are not guaranteed actual start/end. No inferred directions, formats, payments or final tariff snapshots. All candidates remain review-only and outside runtime booking tables; original data and financial history not modified. Readback verified 55 distinct source references, counts and header formatting via Sheets API; no native visual render available. No source IDs or names committed to GitHub.
+
+Next release gates: verify precise time/format/direction and financial evidence, import from reviewed copy, create separate owned TEST Calendar and standalone Apps Script project, authorize Google, configure new bot securely, verify strict protections and triggers, live three-origin E2E, actual backup/restore including Calendar, and explicit cutover approval. No automatic deployment connector, no live trigger activation, no actual booking import or production changes.
