@@ -102,7 +102,7 @@ function crmCalendarBusy_(request,calendarId,candidate,ownEventId){
   }
   throw Error("Availability page limit exceeded");
 }
-function crmRuntimePort_(sheet,accepted,journal,request,calendarId,tenantName,newId,unclaimedRows=()=>[],resolveTitle){
+function crmRuntimePort_(sheet,accepted,journal,request,calendarId,tenantName,newId,unclaimedRows=()=>[],resolveTitle,colorFor){
   if(typeof newId!=="function")throw Error("Missing operation ID allocator");
   function discovery(){
     const result=crmCalendarChanges_(request,calendarId,null),map=new Map(),unmanaged=[];
@@ -118,7 +118,7 @@ function crmRuntimePort_(sheet,accepted,journal,request,calendarId,tenantName,ne
     }
     return {map,unmanaged};
   }
-  const cal=crmCalendarPort_(request,calendarId,tenantName,crmRuntimeEventId_,resolveTitle);
+  const cal=crmCalendarPort_(request,calendarId,tenantName,crmRuntimeEventId_,resolveTitle,colorFor);
   const targets={sheet,accepted,calendar:cal};
   const inventory=()=>{
     const d=discovery(),ids=[...new Set([...sheet.list().map(b=>b.id),...accepted.list().map(b=>b.id),...d.map.keys()])];
