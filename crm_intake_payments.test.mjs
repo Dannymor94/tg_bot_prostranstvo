@@ -197,3 +197,23 @@ test('calendar-origin accepted booking receives first quote, subsequent tariff c
  const same=ctx.crmFinancialRow_({values:out,formulas:r.formulas},b,1,profiles,changed,[]);
  assert.deepEqual(plain(same),plain(out));
 });
+
+test('internal financial projection retains zero snapshot and does not rewrite after profile changes',()=>{
+ const internal=[{...profiles[0],regular:false,internal:true}];
+ const b=manual(input,internal,cfg()).booking;
+ const r=row();r.values[11]=b.id;
+ const out=ctx.crmFinancialRow_(r,b,1,internal,cfg(),[]);
+ assert.equal(out[6],0);assert.equal(out[7],0);assert.equal(out[8],0);
+ assert.match(out[14],/^internal:/);assert.equal(out[15],'Без оплаты (внутренняя)');
+ const same=ctx.crmFinancialRow_({values:out,formulas:r.formulas},b,1,profiles,cfg(),[]);
+ assert.deepEqual(plain(same),plain(out));
+});
+test('internal quote does not bypass hours or masquerade as a promotional discount',()=>{
+ const p=[{...profiles[0],regular:false,internal:true}];
+ const r=manual(input,p,cfg());
+ assert.equal(r.quote.totalKopecks,0);assert.equal(r.quote.discountBps,0);
+ assert.equal(r.quote.baseKopecks,170000);assert.equal(r.quote.nonBillable,true);
+ assert.equal(manual({...input,from:300},p,cfg()).kind,'review');
+ assert.throws(()=>ctx.crmQuote_({...r.booking,regular:true,internal:true},cfg()));
+ assert.throws(()=>ctx.crmValidateTariff_({...cfg(),version:'internal:forged'}));
+});
