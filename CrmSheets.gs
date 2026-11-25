@@ -86,8 +86,9 @@ function crmSheetBookingPort_(sheet,tenantSheet,flush,allowUnclaimed=false){
   }
   function read(id){crmId_(id);return inventory().map.get(id)?.booking||null;}
   function list(){return [...inventory().map.values()].map(x=>x.booking);}
-  function compareAndWrite(id,before,desired){
+  function compareAndWrite(id,before,desired,initialQuote=null){
     crmId_(id);crmValidateBooking_(desired);
+    if(initialQuote!==null&&(before!==null||desired.status!=="confirmed"||!Number.isSafeInteger(initialQuote.totalKopecks)||initialQuote.totalKopecks<0||typeof initialQuote.tariffVersion!=="string"||!initialQuote.tariffVersion.trim()))throw Error("Invalid initial quote");
     if(id!==desired.id)throw Error("Booking ID mismatch");
     const {map,tenants}=inventory(),old=map.get(id);
     if(!crmSyncEqual_(old?.booking||null,before))throw Error("Sheet compare mismatch");
@@ -102,6 +103,7 @@ function crmSheetBookingPort_(sheet,tenantSheet,flush,allowUnclaimed=false){
     const dateSerial=crmCivilDate_(desired.date).getTime()/86400000+25569;
     v[0]=dateSerial;v[1]=desired.from/1440;v[2]=desired.to/1440;v[3]=name;v[4]=crmSheetSafeText_(desired.direction);v[5]=format;
     v[9]=status;v[11]=id;v[16]=desired.tenantId||"";
+    if(initialQuote!==null){v[6]=initialQuote.totalKopecks/100;v[14]=crmSheetSafeText_(initialQuote.tariffVersion);}
     // Preserve all nonbooking values, including payment intent, amounts and metadata.
     // Reject formulas rather than copying evaluated values over them.
     for(const x of v)if(typeof x==="string")crmSheetSafeText_(x);
