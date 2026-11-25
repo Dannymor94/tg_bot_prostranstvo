@@ -111,3 +111,30 @@ function crmV2VerifyBackupTest(){
   const result=crmBackupVerify_(DriveApp.getFolderById(latest.folderId),latest.manifestId,binding);
   return {ok:true,date:result.manifest.date,events:result.events.length,operationalEntries:Object.keys(result.state).length};
 }
+
+// Restore rehearsal only: copy a verified backup into the same private folder,
+// never replace either active workbook or Calendar. Calendar payload is verified
+// but not reinserted by this operation; actual restore needs a fresh target.
+function crmV2RestoreWorkbookTest(){
+  const lock=LockService.getScriptLock();
+  if(!lock.tryLock(5000))throw Error("System busy");
+  try{
+    const env=crmV2BoundTest_(),props=env.props,binding=JSON.parse(props.getProperty("CRM_V2_BINDING"));
+    if(props.getProperty("CRM_V2_RESTORE_TEST_ENABLED")!=="true")throw Error("Restore rehearsal disabled");
+    const latest=JSON.parse(props.getProperty("CRM_V2_LAST_BACKUP")||"null");
+    if(!latest||latest.folderId!==props.getProperty("CRM_V2_BACKUP_FOLDER_ID"))throw Error("No backup");
+    const folder=DriveApp.getFolderById(latest.folderId),backup=crmBackupVerify_(folder,latest.manifestId,binding);
+    const file=DriveApp.getFileById(backup.manifest.copyId).makeCopy("RESTORE-TEST-"+backup.manifest.date+"-"+Utilities.getUuid(),folder);
+    crmBackupPrivate_(file);
+    if([binding.spreadsheetId,backup.manifest.copyId].includes(file.getId()))throw Error("Restore not isolated");
+    const restored=SpreadsheetApp.openById(file.getId());
+    if(JSON.stringify(restored.getSheets().map(s=>[s.getName(),s.getMaxRows(),s.getMaxColumns()]))!==backup.manifest.shape)throw Error("Restore shape mismatch");
+    const journal=crmJournalForSheet_(restored.getSheetByName("_CRM_JOURNAL"),()=>{throw Error("Read-only restore");});
+    const accepted=crmAcceptedPort_(restored.getSheetByName("_CRM_ACCEPTED"),()=>{throw Error("Read-only restore");});
+    const payments=crmPaymentPort_(restored.getSheetByName("Оплаты"),()=>{throw Error("Read-only restore");});
+    const tariff=crmReadSettings_(restored.getSheetByName("Настройки"));
+    const tenants=crmTenantProfiles_(restored.getSheetByName("Арендаторы"));
+    return {ok:true,restoredSpreadsheetId:file.getId(),calendarEventsVerified:backup.events.length,
+      accepted:accepted.list().length,journal:journal.list().length,payments:payments.list().length,tenants:tenants.length,tariffVersion:tariff.version};
+  }finally{lock.releaseLock();}
+}
