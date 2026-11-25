@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const ctx=vm.createContext({});
-for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmSheets.gs','CrmIntake.gs','CrmPayments.gs','CrmTelegramQuery.gs','CrmTelegramAdmin.gs','CrmTelegram.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
+for(const f of ['CrmCore.gs','CrmRegistry.gs','CrmSync.gs','CrmSheets.gs','CrmIntake.gs','CrmPayments.gs','CrmTenants.gs','CrmTelegramQuery.gs','CrmTelegramAdmin.gs','CrmTelegram.gs'])vm.runInContext(readFileSync(new URL(f,import.meta.url),'utf8'),ctx);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const {crmAdminCommand_:command,crmAdminExecute_:execute,crmAdminPreview_:preview}=ctx;
 const today='2026-11-25',now=Date.parse('2026-11-25T07:00:00Z');
