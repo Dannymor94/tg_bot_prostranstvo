@@ -17,7 +17,10 @@ function crmTgStatusText_(raw,now){
   let r;try{r=JSON.parse(raw||"null");}catch(e){r=null;}
   if(!r||!Number.isFinite(Date.parse(r.at))||Date.parse(r.at)>now||now-Date.parse(r.at)>14*3600000)return "Состояние синхронизации не подтверждено: нет актуальной сверки.";
   if(typeof r.ok!=="boolean"||!["pending","unmanaged","conflicts","errors"].every(k=>Number.isSafeInteger(r[k])&&r[k]>=0))return "Состояние синхронизации не подтверждено.";
-  return ["Последняя сверка: "+r.at,r.ok&&!r.pending&&!r.unmanaged&&!r.conflicts&&!r.errors?"Последняя сверка завершена без замечаний.":"Требуется внимание.", "Незавершенных операций: "+r.pending,"Необработанных событий: "+r.unmanaged,"Конфликтов: "+r.conflicts,"Ошибок: "+r.errors,"Это отчет последней сверки, не гарантия доступности сервисов."].join("\n");
+  const reasons={interval:"разные переносы в CRM и Calendar",missing_sheet_row:"строка отсутствует в CRM",overlap:"пересечение аренд",reconciliation_failed:"не удалось сверить запись",pending_retry_failed:"не завершена повторная попытка",payment_requires_stable_booking:"сначала синхронизируй аренду",payment_requires_stable_quote:"сначала проверь стоимость",calendar_title_metadata_requires_normalization:"проверь название и отметку оплаты",existing_tenant_day:"другая аренда этого арендатора в тот же день",occupied:"время занято"};
+  const details=Array.isArray(r.details)?r.details.slice(0,8).filter(x=>x&&typeof x.id==="string"&&/^[a-zA-Z0-9_-]{1,128}$/.test(x.id)&&typeof x.reason==="string"&&/^[a-zA-Z0-9_, -]{1,100}$/.test(x.reason)).map(x=>x.id+": "+(Object.prototype.hasOwnProperty.call(reasons,x.reason)?reasons[x.reason]:x.reason)):[];
+  const review=Number.isSafeInteger(r.finance?.review)&&r.finance.review>=0?["Финансы требуют сверки: "+r.finance.review]:[];
+  return ["Последняя сверка: "+r.at,r.ok&&!r.pending&&!r.unmanaged&&!r.conflicts&&!r.errors?"Последняя сверка завершена без замечаний.":"Требуется внимание.", "Незавершенных операций: "+r.pending,"Необработанных событий: "+r.unmanaged,"Конфликтов: "+r.conflicts,"Ошибок: "+r.errors,...review,...(r.limited===true?["Сверка ограничена размером пакета; нужна следующая итерация."]:[]),...details,"Это отчет последней сверки, не гарантия доступности сервисов."].join("\n");
 }
 function crmTgDispatch_(update,env){
   const role=crmTgRole_(update,env.owner,env.admins);
