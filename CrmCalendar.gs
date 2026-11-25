@@ -17,6 +17,10 @@ function crmCalendarLocal_(raw){
   if(date<"2015-01-01")throw Error("Unsupported Moscow date");
   return {date,minute:Number(local.slice(11,13))*60+Number(local.slice(14,16))};
 }
+function crmCalendarCategoryColor_(p){
+  if(!p||typeof p.regular!=="boolean"||(p.internal!==undefined&&typeof p.internal!=="boolean")||p.internal&&p.regular)throw Error("Invalid tenant color category");
+  return p.internal?"3":p.regular?"2":"6";
+}
 function crmCalendarBody_(b,tenantName){
   crmValidateBooking_(b);
   if(b.status==="cancelled"||typeof tenantName!=="string")throw Error("Invalid Calendar projection");
@@ -60,7 +64,7 @@ function crmCalendarTitleBooking_(event,booking,tenantName,resolveTitle){
   if(!profile)throw Error("Calendar title changed; unknown or ambiguous tenant");
   return crmBookingSnapshot_({...booking,tenantId:profile.id,direction:parts[1].trim()});
 }
-function crmCalendarPort_(request,calendarId,tenantName,eventIdFor,resolveTitle){
+function crmCalendarPort_(request,calendarId,tenantName,eventIdFor,resolveTitle,colorFor){
   if(typeof request!=="function"||typeof calendarId!=="string"||!calendarId||calendarId==="primary"||typeof tenantName!=="function")throw Error("Invalid Calendar binding");
   const prefix="/calendars/"+encodeURIComponent(calendarId),events=prefix+"/events";
   function eventId(id){const value=eventIdFor?eventIdFor(id):crmCalendarEventId_(id);if(typeof value!=="string"||!value||value.length>1024)throw Error("Invalid Calendar event ID");return value;}
@@ -78,6 +82,7 @@ function crmCalendarPort_(request,calendarId,tenantName,eventIdFor,resolveTitle)
     return {booking,event:r.body};
   }
   function read(id){return fetch(id).booking;}
+  function color(b){return typeof colorFor==="function"&&b.tenantId!==null?colorFor(b.tenantId):null;}
   function compareAndWrite(id,before,desired){
     crmId_(id);
     if(desired!==null&&desired.id!==id)throw Error("Calendar booking ID mismatch");
@@ -92,6 +97,7 @@ function crmCalendarPort_(request,calendarId,tenantName,eventIdFor,resolveTitle)
       if(r.code!==204&&r.code!==404&&r.code!==410)throw Error("Calendar delete failed: "+r.code);
     }else{
       const body=crmCalendarBody_(desired,desired.tenantId===null?"":tenantName(desired.tenantId));
+      const desiredColor=color(desired);if(desiredColor!==null)body.colorId=desiredColor;
       if(current.event){
         // Preserve unrelated event metadata/private properties; ETag blocks newer UI edits.
         body.extendedProperties.private={...current.event.extendedProperties.private,crmBookingId:id};
@@ -113,12 +119,17 @@ function crmCalendarPort_(request,calendarId,tenantName,eventIdFor,resolveTitle)
     const body=crmCalendarBody_(expected,expected.tenantId===null?"":tenantName(expected.tenantId));
     const payment=crmCalendarPaymentLine_(current.event.description).payment;
     if(payment)body.description+="\n"+payment;
-    if(current.event.summary===body.summary&&current.event.description===body.description)return false;
-    if(payment==="Оплата: Отметить оплату")throw Error("Resolve payment instruction before normalizing title");
-    const result=request("PATCH",events+"/"+encodeURIComponent(eventId(id)),{summary:body.summary,description:body.description},{"If-Match":current.event.etag});
+    const patch={},desiredColor=color(expected);
+    if(current.event.summary!==body.summary||current.event.description!==body.description){
+      if(payment==="Оплата: Отметить оплату")throw Error("Resolve payment instruction before normalizing title");
+      patch.summary=body.summary;patch.description=body.description;
+    }
+    if(desiredColor!==null&&current.event.colorId!==desiredColor)patch.colorId=desiredColor;
+    if(!Object.keys(patch).length)return false;
+    const result=request("PATCH",events+"/"+encodeURIComponent(eventId(id)),patch,{"If-Match":current.event.etag});
     if(result.code!==200)throw Error("Calendar normalization failed: "+result.code);
     const verified=fetch(id);
-    if(!crmSyncEqual_(verified.booking,expected)||verified.event.summary!==body.summary||verified.event.description!==body.description)throw Error("Calendar normalization not verified");
+    if(!crmSyncEqual_(verified.booking,expected)||verified.event.summary!==body.summary||verified.event.description!==body.description||desiredColor!==null&&verified.event.colorId!==desiredColor)throw Error("Calendar normalization not verified");
     return true;
   }
   return {read,compareAndWrite,normalize};
