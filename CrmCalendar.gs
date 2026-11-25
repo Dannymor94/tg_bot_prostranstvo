@@ -116,7 +116,7 @@ function crmCalendarChanges_(request,calendarId,syncToken){
   return collect(syncToken)||collect(null);
 }
 function crmGasCalendarRequest_(method,path,body,headers){
-  if(!/^\/calendars\//.test(path))throw Error("Invalid Calendar API path");
+  if(path!=="/freeBusy"&&!/^\/calendars\//.test(path))throw Error("Invalid Calendar API path");
   const options={method:method.toLowerCase(),headers:{...headers,Authorization:"Bearer "+ScriptApp.getOAuthToken()},muteHttpExceptions:true,followRedirects:false};
   if(body!==null){options.contentType="application/json";options.payload=JSON.stringify(body);}
   const response=UrlFetchApp.fetch("https://www.googleapis.com/calendar/v3"+path,options);
