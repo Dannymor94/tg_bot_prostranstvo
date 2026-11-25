@@ -55,13 +55,22 @@ function crmTgUiStep_(key,isCallback,env,session,token,now){
     if(a.kind==="date")return prompt("Напиши дату или день недели, например «суббота» или «27.11».","date",{mode:a.mode});
     if(a.kind==="booking"){
       const b=stable(a.id,a.revision),p=profile(b.tenantId);
-      const choices=[{label:"Оплатить полностью",action:{kind:"payFull",id:b.id,revision:a.revision}},{label:"Частичная оплата",action:{kind:"payPart",id:b.id,revision:a.revision}}];
+      const choices=[];
       if(a.mode!=="pay")choices.push({label:"Перенести",action:{kind:"move",id:b.id,revision:a.revision}},{label:"Отменить аренду",action:{kind:"cancel",id:b.id,revision:a.revision}});
       choices.push({label:"К расписанию",action:{kind:"bookings",date:b.date,page:0,mode:a.mode}});
       let money="Стоимость требует проверки.";
-      try{const m=crmAdminMoney_(env,b.id,a.revision);money="Стоимость: "+crmTgPrice_(m.quote)+"\nПолучено: "+crmTgPrice_(m.summary.paidKopecks)+"\nОстаток: "+crmTgPrice_(m.summary.balanceKopecks);}catch(e){/* do not invent a price */}
+      try{
+        const m=crmAdminMoney_(env,b.id,a.revision);money="Стоимость: "+crmTgPrice_(m.quote)+"\nПолучено: "+crmTgPrice_(m.summary.paidKopecks)+"\nОстаток: "+crmTgPrice_(m.summary.balanceKopecks);
+        if(m.summary.creditKopecks)money+="\nПереплата: "+crmTgPrice_(m.summary.creditKopecks);
+        if(m.summary.balanceKopecks>0)choices.unshift({label:"Оплатить полностью",action:{kind:"payFull",id:b.id,revision:a.revision}},{label:"Частичная оплата",action:{kind:"payPart",id:b.id,revision:a.revision}});
+      }catch(e){
+        for(const [choice,label] of [["keep","Сохранить прежнюю цену"],["recalculate","Пересчитать стоимость"]]){
+          try{const plan=crmQuoteReviewPlan_(env,b,a.revision,choice);choices.unshift({label:label+" — "+crmTgPrice_(plan.quote),action:{kind:"quote",id:b.id,revision:a.revision,choice}});}catch(e){/* no unsafe choice */}
+        }
+      }
       return output(p.name+" — "+b.direction+"\n"+b.date+" "+crmTgTime_(b.from)+"–"+crmTgTime_(b.to)+" (МСК)\n"+money,choices);
     }
+    if(a.kind==="quote"){stable(a.id,a.revision);return {state:null,command:"/quote "+a.id+" | "+a.choice};}
     if(["payFull","payPart","move","cancel"].includes(a.kind)){
       stable(a.id,a.revision);
       if(a.kind==="payFull"||a.kind==="cancel")return {state:null,command:a.kind==="cancel"?"/cancel "+a.id:"/pay "+a.id+" | полностью"};
