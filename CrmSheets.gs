@@ -48,6 +48,7 @@ function crmSheetTenants_(sheet){
   const byId=new Map(),byName=new Map();
   for(const r of crmSheetRows_(sheet,"Арендаторы")){
     if(r.formulas.some(Boolean))throw Error("Formula in tenant row");
+    if(r.values[7]==="")continue;
     const id=crmId_(r.values[7]),name=crmSheetSafeText_(r.values[0]).trim();
     if(!name||byId.has(id))throw Error("Duplicate or invalid tenant");
     byId.set(id,name);
