@@ -82,3 +82,12 @@ test('zero priced booking and full payment have no outstanding balance',()=>{
   assert.equal(summary('b1',100000,[receipt()]).status,'paid');
   assert.equal(summary('b1',153000,[]).status,'unpaid');
 });
+
+test('different edits to date and endpoints never manufacture an interval',()=>{
+ const b=booking();
+ const r=merge(b,booking({date:'2026-11-28'}),booking({from:900}));
+ assert.equal(r.kind,'conflict');assert.ok(r.fields.includes('interval'));
+ assert.equal(merge(b,booking({from:900}),booking({to:1140})).kind,'conflict');
+ assert.equal(merge(b,booking({from:900}),booking({from:900})).kind,'change');
+ assert.equal(merge(b,booking({from:900}),booking({direction:'Pilates'})).kind,'change');
+});
