@@ -52,7 +52,7 @@ function crmTgDispatch_(update,env){
 }
 function crmTgAdminRead_(key,env,today){
   const ids=env.port.inventory().ids;
-  if(key==="v2|tenants")return ["Арендаторы",...env.profiles.slice(0,20).map(p=>p.name+" — "+p.direction+(p.regular?" (постоянный)":"")),env.profiles.length>20?"Первые 20; полный список в CRM.":""].filter(Boolean).join("\n");
+  if(key==="v2|tenants")return ["Арендаторы",...env.profiles.slice(0,20).map(p=>p.name+" — "+p.direction+(p.internal?" (внутренний)":p.regular?" (постоянный)":"")),env.profiles.length>20?"Первые 20; полный список в CRM.":""].filter(Boolean).join("\n");
   if(key==="v2|schedule"){
     const rows=ids.map(id=>env.port.read("sheet",id)).filter(b=>b&&b.date===today&&b.status!=="cancelled").sort((a,b)=>a.from-b.from);
     return ["Расписание CRM на "+today+" (МСК)",...rows.slice(0,20).map(b=>crmTgTime_(b.from)+"–"+crmTgTime_(b.to)+" "+(env.profiles.find(p=>p.id===b.tenantId)?.name||"Уточнить")+" — "+b.direction+"\nID: "+b.id),rows.length?"":"Нет записей в CRM.","Не является подтверждением свободного времени."].filter(Boolean).join("\n");
