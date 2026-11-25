@@ -61,10 +61,14 @@ function crmV2ReconcileTest(){
     report.intake={tenants:tenantIntake,calendar:calendarIntake,sheet:sheetIntake};
     report.recurring=recurring;
     report.finance=crmFinancialPass_(env.sheets["Аренды"],env.sheets["Арендаторы"],env.accepted,env.journal,env.profiles,env.tariff,env.payments.list(),env.flush,10);
-    report.ok=report.ok&&!recurring.invalidRules&&!recurring.review.length&&!recurring.errors.length&&!recurring.limited&&!tenantIntake.errors&&!tenantIntake.review&&!tenantIntake.incomplete&&!tenantIntake.limited&&!calendarIntake.errors&&!calendarIntake.review&&!calendarIntake.limited&&!sheetIntake.errors&&!sheetIntake.review&&!sheetIntake.incomplete&&!sheetIntake.limited&&!report.finance.errors&&!report.finance.review&&!report.finance.limited;
+    const paymentEnabled=env.props.getProperty("CRM_V2_PAYMENT_INTENTS_TEST_ENABLED")==="true";
+    report.paymentIntents=paymentEnabled?crmPaymentIntentsPass_(env,crmGasCalendarRequest_,today,crmPaymentStableId_,10):{receipts:0,cleared:0,projected:0,review:[],errors:[],limited:false};
+    report.paymentIntents.enabled=paymentEnabled;
+    if(report.paymentIntents.receipts)report.finance=crmFinancialPass_(env.sheets["Аренды"],env.sheets["Арендаторы"],env.accepted,env.journal,env.profiles,env.tariff,env.payments.list(),env.flush,10);
+    report.ok=report.ok&&!report.paymentIntents.review.length&&!report.paymentIntents.errors.length&&!report.paymentIntents.limited&&!recurring.invalidRules&&!recurring.review.length&&!recurring.errors.length&&!recurring.limited&&!tenantIntake.errors&&!tenantIntake.review&&!tenantIntake.incomplete&&!tenantIntake.limited&&!calendarIntake.errors&&!calendarIntake.review&&!calendarIntake.limited&&!sheetIntake.errors&&!sheetIntake.review&&!sheetIntake.incomplete&&!sheetIntake.limited&&!report.finance.errors&&!report.finance.review&&!report.finance.limited;
     if(report.nextAfterId!==null)env.props.setProperty("CRM_V2_SCAN_AFTER",report.nextAfterId);
     env.props.setProperty("CRM_V2_LAST_REPORT",JSON.stringify({at:new Date().toISOString(),ok:report.ok,completed:report.completed,
-      pending:report.pending,unmanaged:report.unmanaged,conflicts:report.conflicts.length,errors:report.errors.length,limited:report.limited,intake:report.intake,finance:report.finance,recurring:{enabled:recurring.enabled,created:recurring.created,review:recurring.review.length,errors:recurring.errors.length,invalidRules:recurring.invalidRules,limited:recurring.limited}}));
+      pending:report.pending,unmanaged:report.unmanaged,conflicts:report.conflicts.length,errors:report.errors.length,limited:report.limited,intake:report.intake,finance:report.finance,paymentIntents:{enabled:paymentEnabled,receipts:report.paymentIntents.receipts,review:report.paymentIntents.review.length,errors:report.paymentIntents.errors.length,limited:report.paymentIntents.limited},recurring:{enabled:recurring.enabled,created:recurring.created,review:recurring.review.length,errors:recurring.errors.length,invalidRules:recurring.invalidRules,limited:recurring.limited}}));
     console.log(JSON.stringify({ok:report.ok,completed:report.completed,pending:report.pending,unmanaged:report.unmanaged,conflicts:report.conflicts.length,errors:report.errors.length}));
     return report;
   }finally{lock.releaseLock();}
