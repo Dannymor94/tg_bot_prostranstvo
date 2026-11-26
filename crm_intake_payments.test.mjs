@@ -188,11 +188,11 @@ test('finance projection snapshots quote, reflects actual receipts, does not rep
  const cancelled=ctx.crmFinancialRow_({values:moved,formulas:r.formulas},{...booking,status:'cancelled'},3,profiles,newer,[receipt()]);
  assert.equal(cancelled[7],500.01);assert.equal(cancelled[8],0);assert.equal(cancelled[15],'Отмена — проверить возврат');
 });
-test('calendar-origin accepted booking receives first quote, subsequent tariff changes do not reprice',()=>{
+test('external Calendar booking leaves price and balance for explicit review',()=>{
  const r=row();r.values[11]='ext_google1';
  const b={...booking,id:'ext_google1'};
  const out=ctx.crmFinancialRow_(r,b,1,profiles,cfg(),[]);
- assert.equal(out[6],1530);assert.equal(out[12],'google1');assert.equal(out[8],1530);
+ assert.equal(out[6],'');assert.equal(out[12],'google1');assert.equal(out[8],'');assert.equal(out[15],'Проверить стоимость');
  const changed=cfg();changed.rates.weekday.group[2]=200000;
  const same=ctx.crmFinancialRow_({values:out,formulas:r.formulas},b,1,profiles,changed,[]);
  assert.deepEqual(plain(same),plain(out));

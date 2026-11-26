@@ -4,7 +4,7 @@ function crmFinancialRow_(row,booking,revision,profiles,cfg,entries){
   const v=row.values;
   if(row.formulas.some(Boolean)||!Number.isSafeInteger(revision)||revision<1||v[11]!==booking.id)throw Error("Invalid financial row");
   let quote=v[6],version=v[14],quotedRevision=v[13],state="Синхронизировано";
-  if(quote===""&&version===""&&quotedRevision===""&&booking.status==="confirmed"&&revision===1){
+  if(quote===""&&version===""&&quotedRevision===""&&booking.status==="confirmed"&&revision===1&&!booking.id.startsWith("ext_")){
     const p=profiles.find(x=>x.id===booking.tenantId);
     if(!p)throw Error("Missing quote tenant");
     const q=crmQuote_({...booking,regular:p.regular,internal:p.internal},cfg);

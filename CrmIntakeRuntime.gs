@@ -41,29 +41,39 @@ function crmRuntimeEventId_(id){
   crmId_(id);
   return id.startsWith("ext_")?crmExternalBookingId_(id.slice(4)).slice(4):crmCalendarEventId_(id);
 }
-function crmAdoptCalendarEvent_(request,calendarId,event,profiles,cfg){
+function crmAdoptCalendarEvent_(request,calendarId,event,profiles,cfg,migration=null){
   if(event.id.startsWith("crm2"))return {kind:"review",reason:"reserved_event_id"};
   const id=crmExternalBookingId_(event.id);
-  if(event.description&&event.description.trim())return {kind:"review",reason:"existing_description"};
+  const legacy=migration!==null;
+  if(legacy){
+    // Only the dedicated, durably staged migration path may admit this marker.
+    crmLegacyApproval_(event,migration);
+  }else if(event.description&&event.description.trim())return {kind:"review",reason:"existing_description"};
   const plan=crmManualCalendarPlan_(event,profiles,cfg,id);
   if(plan.kind!=="ready")return plan;
+  if(legacy&&!crmSyncEqual_(plan.booking,migration.booking))throw Error("Reviewed booking differs from adoption plan");
   const path="/calendars/"+encodeURIComponent(calendarId)+"/events/"+encodeURIComponent(event.id);
   const current=request("GET",path,null,{});
   if(current.code!==200||current.body?.id!==event.id)throw Error("Calendar intake read failed");
   if(current.body.extendedProperties?.private?.crmBookingId===id){
     const actual=crmCalendarSnapshot_(current.body,id,event.id);
     if(!crmSyncEqual_(actual,plan.booking))throw Error("Adopted event changed");
+    if(legacy&&current.body.extendedProperties?.private?.crmLegacyDescription!==event.description)throw Error("Legacy provenance missing");
     return {...plan,replayed:true};
   }
-  if(current.body.etag!==event.etag||current.body.extendedProperties?.private?.crmBookingId)throw Error("Calendar intake changed");
+  if(current.body.etag!==event.etag||current.body.extendedProperties?.private?.crmBookingId||
+    legacy&&crmMigrationCanonical_(current.body)!==crmMigrationCanonical_(event))throw Error("Calendar intake changed");
   const body=crmCalendarBody_(plan.booking,plan.tenantName);
   // Adoption is a metadata patch only, never move, create or delete the event.
   const patch={summary:body.summary,description:body.description,visibility:body.visibility,transparency:body.transparency,
-    extendedProperties:{private:{...current.body.extendedProperties?.private,crmBookingId:id}}};
+    extendedProperties:{private:{...current.body.extendedProperties?.private,crmBookingId:id,
+      ...(legacy?{crmLegacyDescription:event.description}:{})},
+      ...(current.body.extendedProperties?.shared?{shared:current.body.extendedProperties.shared}:{})}};
   const result=request("PATCH",path,patch,{"If-Match":event.etag});
   if(result.code!==200)throw Error("Calendar adoption failed: "+result.code);
   const verified=request("GET",path,null,{});
   if(verified.code!==200||!crmSyncEqual_(crmCalendarSnapshot_(verified.body,id,event.id),plan.booking))throw Error("Calendar adoption not verified");
+  if(legacy&&verified.body.extendedProperties?.private?.crmLegacyDescription!==event.description)throw Error("Legacy provenance not verified");
   return {...plan,replayed:false};
 }
 function crmIntakeCalendarPass_(request,calendarId,profiles,cfg,limit){
