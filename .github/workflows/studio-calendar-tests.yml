@@ -6,6 +6,7 @@ on:
       - feature/bidirectional-sheet-calendar-20261120
     paths:
       - '*.gs'
+      - 'scripts/*.gs'
       - '*.test.mjs'
       - 'scripts/package-crm-v2.mjs'
       - 'appsscript.json'
@@ -13,6 +14,7 @@ on:
   pull_request:
     paths:
       - '*.gs'
+      - 'scripts/*.gs'
       - '*.test.mjs'
       - 'appsscript.json'
       - '.github/workflows/studio-calendar-tests.yml'
@@ -39,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for file in *.gs; do
+          for file in *.gs scripts/*.gs; do
             node --check --input-type=commonjs < "$file"
           done
       - name: Run deterministic regression tests
