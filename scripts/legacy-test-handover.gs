@@ -6,7 +6,7 @@ function legacyTestAudit(){
   const book=SpreadsheetApp.openById(cfg.spreadsheetId),cal=Calendar.CalendarList.get(cfg.calendarId);
   if(!/^ТЕСТ — /.test(book.getName())||book.getSpreadsheetTimeZone()!=="Europe/Moscow"||
     cal.accessRole!=="owner"||cal.primary||cal.timeZone!=="Europe/Moscow"||cal.summary!=="ТЕСТ — Студия (GAS ↔ таблица)")throw Error("TEST isolation not verified");
-  if(props.getProperty("BD_TARGET_BINDING")!==cfg.spreadsheetId+"|"+cfg.calendarId)throw Error("Legacy checkpoint binding missing or different");
+  if(props.getProperty("BD_TARGET_BINDING")&&props.getProperty("BD_TARGET_BINDING")!==cfg.spreadsheetId+"|"+cfg.calendarId)throw Error("Legacy checkpoint binding missing or different");
   if(props.getProperty("BIDIR_PRODUCTION_APPROVED"))throw Error("Production approval present; manual review required");
   const keys=props.getKeys(),pending=keys.filter(k=>k.startsWith("BD_PENDING_")).length;
   const triggers=ScriptApp.getProjectTriggers().map(t=>({handler:t.getHandlerFunction(),source:String(t.getTriggerSource()),event:String(t.getEventType()),sourceId:t.getTriggerSourceId(),id:t.getUniqueId()}));
@@ -15,7 +15,7 @@ function legacyTestAudit(){
     if(t.handler==="bdOnSheetEdit"&&t.sourceId!==cfg.spreadsheetId)throw Error("Sheet trigger binding differs");
     if(t.handler==="bdOnCalendarChange"&&t.sourceId!==cfg.calendarId)throw Error("Calendar trigger binding differs");
   }
-  const result={mode:"TEST",exactBinding:true,checkpointBinding:true,pending,paused:props.getProperty("BIDIR_PAUSED")==="true",
+  const result={mode:"TEST",exactBinding:true,checkpointBinding:props.getProperty("BD_TARGET_BINDING")?"matched":"absent_TEST_only",pending,paused:props.getProperty("BIDIR_PAUSED")==="true",
     writeEnabled:cfg.writeEnabled,handlers:triggers.map(t=>t.handler)};
   console.log(JSON.stringify(result));return {result,triggers,spreadsheetId:cfg.spreadsheetId,calendarId:cfg.calendarId};
 }
