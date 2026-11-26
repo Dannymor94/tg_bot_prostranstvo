@@ -112,3 +112,38 @@ test('migration requires both verified same-target handover and fresh post-hando
   const changed={...p,...override};assert.throws(()=>ctx.crmMigrationGuard_({props:{getProperty:k=>changed[k]??null}}));
  }
 });
+
+function projectionFixture(){
+ const booking=approved(event()).booking;
+ const values=Array(17).fill('');
+ values.splice(0,6,46353,booking.from/1440,booking.to/1440,'Synthetic tenant',booking.direction,'Групповое');
+ values[9]='Подтверждена';values[11]=booking.id;values[16]=booking.tenantId;
+ function mock(name,data){
+  const sheet={data,writes:[]};
+  sheet.getName=()=>name;sheet.getLastColumn=()=>data[0].length;sheet.getLastRow=()=>data.length;
+  sheet.getRange=(r,c,n,m)=>({
+   getValues:()=>Array.from({length:n},(_,i)=>data[r-1+i].slice(c-1,c-1+m)),
+   getDisplayValues:()=>Array.from({length:n},(_,i)=>data[r-1+i].map((v,j)=>name==='Аренды'&&r+i===2&&j<3?['27.11.2026','18:30','20:00'][j]:String(v)).slice(c-1,c-1+m)),
+   getFormulas:()=>Array.from({length:n},()=>Array(m).fill('')),
+   setValues(rows){sheet.writes.push([r,c,n,m]);for(let i=0;i<n;i++)for(let j=0;j<m;j++)data[r-1+i][c-1+j]=rows[i][j];}
+  });return sheet;
+ }
+ const h=ctx.crmSheetHeaders_();
+ return {booking,sheet:mock('Аренды',[copy(h['Аренды']),values]),tenantSheet:mock('Арендаторы',[copy(h['Арендаторы']),['Synthetic tenant','Synthetic lesson','Групповое',false,'','','','t1']])};
+}
+test('legacy ID projection writes only Calendar ID, preserves finance and replays without another write',()=>{
+ const {booking,sheet,tenantSheet}=projectionFixture(),before=copy(sheet.data[1]);
+ assert.equal(ctx.crmMigrationProjectCalendarId_(sheet,tenantSheet,booking,'legacy123',()=>{}),true);
+ before[12]='legacy123';assert.deepEqual(sheet.data[1],before);assert.deepEqual(sheet.writes,[[2,13,1,1]]);
+ assert.equal(ctx.crmMigrationProjectCalendarId_(sheet,tenantSheet,booking,'legacy123',()=>{}),false);
+ assert.equal(sheet.writes.length,1);
+});
+test('legacy ID projection rejects mismatched existing ID, changed booking and identity collision',()=>{
+ const {booking,sheet,tenantSheet}=projectionFixture();
+ assert.throws(()=>ctx.crmMigrationProjectCalendarId_(sheet,tenantSheet,booking,'wrong',()=>{}),/mismatch/);
+ sheet.data[1][12]='other';assert.throws(()=>ctx.crmMigrationProjectCalendarId_(sheet,tenantSheet,booking,'legacy123',()=>{}),/differs/);
+ sheet.data[1][12]='';sheet.data[1][4]='changed';assert.throws(()=>ctx.crmMigrationProjectCalendarId_(sheet,tenantSheet,booking,'legacy123',()=>{}),/changed/);
+ sheet.data[1][4]=booking.direction;const other=copy(sheet.data[1]);other[11]='other';other[12]='legacy123';sheet.data.push(other);
+ assert.throws(()=>ctx.crmMigrationProjectCalendarId_(sheet,tenantSheet,booking,'legacy123',()=>{}),/collision/);
+ assert.equal(sheet.writes.length,0);
+});
