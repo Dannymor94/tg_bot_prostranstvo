@@ -95,7 +95,7 @@ function crmAcceptanceLegacyTest(){
     try{crmAdoptCalendarEvent_(lostResponse,env.calendarId,e,env.profiles,env.tariff,approval);}
     catch(error){if(error.message!=="SYNTHETIC_LOST_PATCH_RESPONSE")throw error;}
     crmAdoptCalendarEvent_(crmGasCalendarRequest_,env.calendarId,e,env.profiles,env.tariff,approval);
-    s.lostResponseInjected=injected||s.lostResponseInjected===true;
+    s.lostResponseInjected=injected||s.lostResponseInjected===true;crmAcceptanceSave_(env,s);
     s.legacyIntent=crmAcceptanceSync_(env,"adopt_"+s.booking.id,null,null,b);
     if(!crmAdoptCalendarEvent_(crmGasCalendarRequest_,env.calendarId,e,env.profiles,env.tariff,approval).replayed)throw Error("Legacy replay failed");
     const row=crmSheetRows_(env.sheets["Аренды"],"Аренды").find(r=>r.values[11]===b.id);
