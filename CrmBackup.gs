@@ -63,7 +63,9 @@ function crmV2BackupTest(){
     const folder=DriveApp.getFolderById(folderId);crmBackupPrivate_(folder);
     const date=Utilities.formatDate(new Date(),"Europe/Moscow","yyyy-MM-dd");
     const latest=JSON.parse(props.getProperty("CRM_V2_LAST_BACKUP")||"null");
-    if(latest?.date===date&&latest.spreadsheetId===binding.spreadsheetId&&latest.calendarId===binding.calendarId&&latest.folderId===folderId){
+    const handover=JSON.parse(props.getProperty("CRM_V2_LEGACY_HANDOVER")||"null");
+    const afterHandover=!handover||Number.isFinite(Date.parse(handover.at))&&Number.isFinite(Date.parse(latest?.at))&&Date.parse(latest.at)>=Date.parse(handover.at);
+    if(afterHandover&&latest?.date===date&&latest.spreadsheetId===binding.spreadsheetId&&latest.calendarId===binding.calendarId&&latest.folderId===folderId){
       const verified=crmBackupVerify_(folder,latest.manifestId,binding);
       return {ok:true,date,reused:true,events:verified.events.length};
     }

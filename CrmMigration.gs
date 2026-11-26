@@ -87,7 +87,7 @@ function crmV2ImportReviewedLegacyTest(){
       const next=row.values.slice();next[1]="PENDING";next[4]="metadata_then_sync";
       crmMigrationSet_(sheet,row,next,env.flush);
       crmAdoptCalendarEvent_(crmGasCalendarRequest_,env.calendarId,event,env.profiles,env.tariff,approval);
-      const planned=crmSyncIntent_({id:"migration_"+event.id,base:null,sheet:null,calendar:booking,calendarDeleted:false});
+      const planned=crmSyncIntent_({id:"mig_"+event.id,base:null,sheet:null,calendar:booking,calendarDeleted:false});
       const result=crmRunSync_(env.port,planned.intent);
       if(result.status!=="done")throw Error("Migration held by synchronization conflict");
       const done=next.slice();done[1]="DONE";done[4]="quote_and_payment_not_imported";
