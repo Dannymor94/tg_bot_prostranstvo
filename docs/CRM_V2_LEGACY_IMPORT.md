@@ -8,7 +8,7 @@ Fresh connector read confirmed 69 events, no next page, and exactly one descript
 
 This is the entire recognized description, not a substring match. Prefix-only markers, appended notes and unknown descriptions remain on review. No names, private IDs or raw customer snapshots are included in this repository.
 
-Implemented and locally tested, **not installed or run live** in this checkpoint. Browser authentication request timed out and the browser runtime reset. No old handler was stopped, no new backup was made, no event was imported and no live E2E was executed. The previous checkpoint's live preflight remains historical evidence, not a fresh run. Production and Telegram were not changed.
+**Installed and live TEST acceptance completed.** Actual TEST bindings were verified, three old booking writers stopped, a fresh post-handover backup verified, and 69 original events archived on REVIEW without modifying Calendar. Live synthetic booking E2E passed; writes are disabled again and v2 has zero triggers. See [the authoritative live acceptance report](CRM_V2_LIVE_ACCEPTANCE_2026-11-26.md) for exact scope, final state and remaining customer-detail review. Production and Telegram were not changed.
 
 ## Implementation
 
@@ -36,4 +36,4 @@ PENDING retains immutable source JSON and reviewed booking JSON. Reinvoke the sa
 
 ## Validation
 
-237 deterministic tests pass locally (0 failed/skipped), including 10 new migration tests: exact marker admission, automatic-intake refusal, preservation, lost-response replay, stale data/412 rejection, missing details, archive corruption and handover/backup gates. The installation build succeeds with 25 v2 modules and legacy helpers excluded. All root GAS files plus the separate legacy helper pass Node syntax checking; git diff --check is clean. GitHub CI and live execution must be recorded separately after publication/deployment.
+242 deterministic tests pass locally (0 failed/skipped), including 10 new migration tests: exact marker admission, automatic-intake refusal, preservation, lost-response replay, stale data/412 rejection, missing details, archive corruption and handover/backup gates. The installation build succeeds with 25 v2 modules and legacy helpers excluded. All root GAS files plus the separate legacy helper pass Node syntax checking; git diff --check is clean. GitHub CI and live execution must be recorded separately after publication/deployment.
