@@ -68,6 +68,23 @@ function crmV2StageLegacyTest(){
     console.log(JSON.stringify(report));return report;
   }finally{lock.releaseLock();}
 }
+// Project the verified original Calendar identity before marking an import DONE.
+// Do not invoke financial projection or rewrite any other rental cell.
+function crmMigrationProjectCalendarId_(sheet,tenantSheet,booking,eventId,flush){
+  if(booking.id!==crmExternalBookingId_(eventId))throw Error("Migration Calendar ID mismatch");
+  const rows=crmSheetRows_(sheet,"Аренды"),matches=rows.filter(r=>r.values[11]===booking.id);
+  if(matches.length!==1||rows.some(r=>r.values[11]!==booking.id&&r.values[12]===eventId))throw Error("Migration Calendar ID collision");
+  const r=matches[0];
+  if(!crmSyncEqual_(crmSheetBookingRow_(r,crmSheetTenants_(tenantSheet)),booking))throw Error("Migration rental changed");
+  if(r.values[12]===eventId)return false;
+  if(r.values[12]!=="")throw Error("Migration Calendar ID already differs");
+  const full=sheet.getRange(r.row,1,1,17),cell=sheet.getRange(r.row,13,1,1);
+  if(full.getFormulas()[0].some(Boolean)||JSON.stringify(full.getValues()[0])!==JSON.stringify(r.values)||cell.getFormulas()[0][0]||cell.getValues()[0][0]!=="")throw Error("Migration rental changed before ID write");
+  cell.setValues([[eventId]]);flush();
+  const expected=r.values.slice();expected[12]=eventId;
+  if(full.getFormulas()[0].some(Boolean)||JSON.stringify(full.getValues()[0])!==JSON.stringify(expected))throw Error("Migration Calendar ID write not verified");
+  return true;
+}
 function crmV2ImportReviewedLegacyTest(){
   const lock=LockService.getScriptLock();if(!lock.tryLock(5000))throw Error("System busy");
   try{
@@ -90,6 +107,7 @@ function crmV2ImportReviewedLegacyTest(){
       const planned=crmSyncIntent_({id:"mig_"+event.id,base:null,sheet:null,calendar:booking,calendarDeleted:false});
       const result=crmRunSync_(env.port,planned.intent);
       if(result.status!=="done")throw Error("Migration held by synchronization conflict");
+      crmMigrationProjectCalendarId_(env.sheets["Аренды"],env.sheets["Арендаторы"],booking,event.id,env.flush);
       const done=next.slice();done[1]="DONE";done[4]="quote_and_payment_not_imported";
       crmMigrationSet_(sheet,{row:row.row,values:next},done,env.flush);report.imported++;
     }
