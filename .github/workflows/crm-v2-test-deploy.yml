@@ -1,0 +1,42 @@
+name: CRM v2 TEST source deployment
+on:
+  push:
+    branches: [feature/studio-crm-v2]
+    paths: ['.github/crm-test-deploy-request.json']
+permissions:
+  contents: read
+concurrency:
+  group: crm-v2-test-source-deployment
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.repository == 'Dannymor94/tg_bot_prostranstvo' && github.ref == 'refs/heads/feature/studio-crm-v2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: node --test *.test.mjs
+        env:
+          TZ: Europe/Moscow
+      - run: node scripts/package-crm-v2.mjs
+  deploy:
+    needs: verify
+    if: github.repository == 'Dannymor94/tg_bot_prostranstvo' && github.ref == 'refs/heads/feature/studio-crm-v2'
+    environment: crm-gas-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: node scripts/package-crm-v2.mjs
+      - name: Guarded source probe or update
+        run: node scripts/deploy-crm-v2-test.mjs
+        env:
+          CRM_GAS_TEST_OAUTH: ${{ secrets.CRM_GAS_TEST_OAUTH }}
+          CRM_GAS_TEST_TARGET: ${{ secrets.CRM_GAS_TEST_TARGET }}

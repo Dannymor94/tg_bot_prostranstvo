@@ -6,12 +6,15 @@ on:
       - feature/bidirectional-sheet-calendar-20261120
     paths:
       - '*.gs'
+      - 'scripts/*.gs'
       - '*.test.mjs'
+      - 'scripts/package-crm-v2.mjs'
       - 'appsscript.json'
       - '.github/workflows/studio-calendar-tests.yml'
   pull_request:
     paths:
       - '*.gs'
+      - 'scripts/*.gs'
       - '*.test.mjs'
       - 'appsscript.json'
       - '.github/workflows/studio-calendar-tests.yml'
@@ -22,7 +25,7 @@ permissions:
 
 jobs:
   gas-tests:
-    name: Validate Apps Script and run 59 regression tests
+    name: Validate Apps Script and run regression tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -37,10 +40,20 @@ jobs:
       - name: Check GAS source syntax
         shell: bash
         run: |
-          for file in Code.gs Bidirectional.gs TelegramUX.gs; do
+          set -euo pipefail
+          for file in *.gs scripts/*.gs; do
             node --check --input-type=commonjs < "$file"
           done
       - name: Run deterministic regression tests
         env:
           TZ: Europe/Moscow
         run: node --test *.test.mjs
+      - name: Build isolated CRM v2 installation bundle
+        run: node scripts/package-crm-v2.mjs
+      - name: Upload installation bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: crm-v2-test-install
+          path: dist/crm-v2-test/
+          if-no-files-found: error
+          retention-days: 14
